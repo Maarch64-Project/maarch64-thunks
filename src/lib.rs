@@ -42,6 +42,8 @@ impl ThunkManager {
         self.register_thunk("strlen", thunk_strlen);
         self.register_thunk("memcpy", thunk_memcpy);
         self.register_thunk("memset", thunk_memset);
+        self.register_thunk("strcmp", thunk_strcmp);
+        self.register_thunk("memcmp", thunk_memcmp);
         self.register_thunk("exit", thunk_exit);
     }
 }
@@ -130,5 +132,37 @@ pub fn thunk_exit(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), 
     let code = ctx.get_x(0) as i32;
     ctx.exited = true;
     ctx.exit_code = code;
+    Ok(())
+}
+
+pub fn thunk_strcmp(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let s1_ptr = ctx.get_x(0);
+    let s2_ptr = ctx.get_x(1);
+    let s1 = mem.read_string(s1_ptr).map_err(|e| format!("strcmp s1: {}", e))?;
+    let s2 = mem.read_string(s2_ptr).map_err(|e| format!("strcmp s2: {}", e))?;
+
+    let res = match s1.cmp(&s2) {
+        std::cmp::Ordering::Less => -1i64,
+        std::cmp::Ordering::Equal => 0i64,
+        std::cmp::Ordering::Greater => 1i64,
+    };
+    ctx.set_x(0, res as u64);
+    Ok(())
+}
+
+pub fn thunk_memcmp(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let s1_ptr = ctx.get_x(0);
+    let s2_ptr = ctx.get_x(1);
+    let n = ctx.get_x(2) as usize;
+
+    let b1 = mem.read(s1_ptr, n).map_err(|e| format!("memcmp s1: {}", e))?;
+    let b2 = mem.read(s2_ptr, n).map_err(|e| format!("memcmp s2: {}", e))?;
+
+    let res = match b1.cmp(&b2) {
+        std::cmp::Ordering::Less => -1i64,
+        std::cmp::Ordering::Equal => 0i64,
+        std::cmp::Ordering::Greater => 1i64,
+    };
+    ctx.set_x(0, res as u64);
     Ok(())
 }
