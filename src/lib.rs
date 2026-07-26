@@ -125,6 +125,9 @@ impl ThunkManager {
         self.register_thunk("read", thunk_read);
         self.register_thunk("open", thunk_open);
         self.register_thunk("open64", thunk_open);
+        self.register_thunk("openat", thunk_openat);
+        self.register_thunk("openat64", thunk_openat);
+        self.register_thunk("__openat_2", thunk_openat);
         self.register_thunk("close", thunk_close);
         self.register_thunk("sendfile", thunk_sendfile);
         self.register_thunk("sendfile64", thunk_sendfile);
@@ -833,6 +836,7 @@ pub fn thunk_memset(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(),
 
 pub fn thunk_exit(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let code = ctx.get_x(0) as i32;
+    unsafe { libc::fflush(std::ptr::null_mut()); }
     ctx.exited = true;
     ctx.exit_code = code;
     Ok(())
@@ -1073,11 +1077,44 @@ pub fn thunk_open(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), S
         }
     };
 
-    let fd = unsafe { libc::open(c_path.as_ptr(), flags, mode) };
+    let host_flags = maarch64_core::syscall::translate_open_flags(flags);
+    let fd = unsafe { libc::open(c_path.as_ptr(), host_flags, mode) };
     if fd < 0 {
         let err = unsafe { *libc::__errno_location() };
+        tracing::info!("[thunk_open] path={:?}, err={}", path, err);
         ctx.set_x(0, (-err as i64) as u64);
     } else {
+        tracing::info!("[thunk_open] path={:?}, fd={}", path, fd);
+        ctx.set_x(0, fd as u64);
+    }
+    Ok(())
+}
+
+pub fn thunk_openat(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dirfd = ctx.get_x(0) as i32;
+    let path_ptr = ctx.get_x(1);
+    let flags = ctx.get_x(2) as i32;
+    let mode = ctx.get_x(3) as u32;
+
+    let path_bytes = mem.read_string(path_ptr).unwrap_or_default();
+    let path = String::from_utf8_lossy(&path_bytes);
+
+    let c_path = match std::ffi::CString::new(path.as_bytes()) {
+        Ok(p) => p,
+        Err(_) => {
+            ctx.set_x(0, -1i64 as u64);
+            return Ok(());
+        }
+    };
+
+    let host_flags = maarch64_core::syscall::translate_open_flags(flags);
+    let fd = unsafe { libc::openat(dirfd, c_path.as_ptr(), host_flags, mode) };
+    if fd < 0 {
+        let err = unsafe { *libc::__errno_location() };
+        tracing::info!("[thunk_openat] dirfd={}, path={:?}, err={}", dirfd, path, err);
+        ctx.set_x(0, (-err as i64) as u64);
+    } else {
+        tracing::info!("[thunk_openat] dirfd={}, path={:?}, fd={}", dirfd, path, fd);
         ctx.set_x(0, fd as u64);
     }
     Ok(())
@@ -1089,13 +1126,18 @@ pub fn thunk_read(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), S
     let count = ctx.get_x(2) as usize;
 
     let mut tmp_buf = vec![0u8; count];
+    let current_offset = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
+    let target_link = std::fs::read_link(format!("/proc/self/fd/{}", fd)).unwrap_or_default();
     let ret = unsafe { libc::read(fd, tmp_buf.as_mut_ptr() as *mut libc::c_void, count) };
+    tracing::info!("[thunk_read] fd={} offset={} target={:?}, buf_ptr={:#x}, count={}, ret={}", fd, current_offset, target_link, buf_ptr, count, ret);
     if ret < 0 {
         let err = unsafe { *libc::__errno_location() };
         ctx.set_x(0, (-err as i64) as u64);
     } else {
         if ret > 0 {
-            let _ = mem.write(buf_ptr, &tmp_buf[..ret as usize]);
+            if let Err(e) = mem.write(buf_ptr, &tmp_buf[..ret as usize]) {
+                tracing::error!("[thunk_read] mem.write FAILED at {:#x}: {:?}", buf_ptr, e);
+            }
         }
         ctx.set_x(0, ret as u64);
     }
@@ -1260,12 +1302,21 @@ pub fn thunk_fstat64(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<()
 
 pub fn thunk_fxstat(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let arg0 = ctx.get_x(0);
-    let buf_addr = if arg0 <= 3 { ctx.get_x(2) } else { ctx.get_x(1) };
-    if let Ok(meta) = std::fs::metadata(".") {
+    let (fd, buf_addr) = if arg0 <= 3 { (ctx.get_x(1) as i32, ctx.get_x(2)) } else { (ctx.get_x(0) as i32, ctx.get_x(1)) };
+    
+    use std::os::unix::io::FromRawFd;
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let res = file.metadata();
+    let _ = std::mem::forget(file);
+
+    if let Ok(meta) = res {
+        use std::os::unix::fs::MetadataExt;
+        tracing::info!("[thunk_fxstat] arg0={} fd={} buf_addr={:#x} size={} mode={:#o}", arg0, fd, buf_addr, meta.size(), meta.mode());
         let _ = write_stat_struct(mem, buf_addr, &meta);
         ctx.set_x(0, 0);
     } else {
-        ctx.set_x(0, 0xffffffffffffffff);
+        tracing::info!("[thunk_fxstat] arg0={} fd={} err", arg0, fd);
+        ctx.set_x(0, -1i64 as u64);
     }
     Ok(())
 }
