@@ -123,6 +123,11 @@ impl ThunkManager {
         self.register_thunk("__errno_location", thunk___errno_location);
         self.register_thunk("write", thunk_write);
         self.register_thunk("read", thunk_read);
+        self.register_thunk("open", thunk_open);
+        self.register_thunk("open64", thunk_open);
+        self.register_thunk("close", thunk_close);
+        self.register_thunk("sendfile", thunk_sendfile);
+        self.register_thunk("sendfile64", thunk_sendfile);
         self.register_thunk("stat", thunk_stat64);
         self.register_thunk("stat64", thunk_stat64);
         self.register_thunk("__xstat", thunk_xstat);
@@ -1039,8 +1044,85 @@ pub fn thunk_write(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), 
     Ok(())
 }
 
-pub fn thunk_read(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    ctx.set_x(0, 0);
+pub fn thunk_open(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let path_ptr = ctx.get_x(0);
+    let flags = ctx.get_x(1) as i32;
+    let mode = ctx.get_x(2) as u32;
+
+    let path_bytes = mem.read_string(path_ptr).unwrap_or_default();
+    let path = String::from_utf8_lossy(&path_bytes);
+
+    let c_path = match std::ffi::CString::new(path.as_bytes()) {
+        Ok(p) => p,
+        Err(_) => {
+            ctx.set_x(0, -1i64 as u64);
+            return Ok(());
+        }
+    };
+
+    let fd = unsafe { libc::open(c_path.as_ptr(), flags, mode) };
+    if fd < 0 {
+        let err = unsafe { *libc::__errno_location() };
+        ctx.set_x(0, (-err as i64) as u64);
+    } else {
+        ctx.set_x(0, fd as u64);
+    }
+    Ok(())
+}
+
+pub fn thunk_read(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let fd = ctx.get_x(0) as i32;
+    let buf_ptr = ctx.get_x(1);
+    let count = ctx.get_x(2) as usize;
+
+    let mut tmp_buf = vec![0u8; count];
+    let ret = unsafe { libc::read(fd, tmp_buf.as_mut_ptr() as *mut libc::c_void, count) };
+    if ret < 0 {
+        let err = unsafe { *libc::__errno_location() };
+        ctx.set_x(0, (-err as i64) as u64);
+    } else {
+        if ret > 0 {
+            let _ = mem.write(buf_ptr, &tmp_buf[..ret as usize]);
+        }
+        ctx.set_x(0, ret as u64);
+    }
+    Ok(())
+}
+
+pub fn thunk_close(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let fd = ctx.get_x(0) as i32;
+    let ret = unsafe { libc::close(fd) };
+    if ret < 0 {
+        let err = unsafe { *libc::__errno_location() };
+        ctx.set_x(0, (-err as i64) as u64);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_sendfile(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let out_fd = ctx.get_x(0) as i32;
+    let in_fd = ctx.get_x(1) as i32;
+    let count = ctx.get_x(3) as usize;
+
+    let mut buf = vec![0u8; 8192];
+    let mut total_written: usize = 0;
+
+    while total_written < count {
+        let to_read = std::cmp::min(buf.len(), count - total_written);
+        let nread = unsafe { libc::read(in_fd, buf.as_mut_ptr() as *mut libc::c_void, to_read) };
+        if nread <= 0 {
+            break;
+        }
+        let nwritten = unsafe { libc::write(out_fd, buf.as_ptr() as *const libc::c_void, nread as usize) };
+        if nwritten <= 0 {
+            break;
+        }
+        total_written += nwritten as usize;
+    }
+
+    ctx.set_x(0, total_written as u64);
     Ok(())
 }
 
