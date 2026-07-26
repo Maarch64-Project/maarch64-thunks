@@ -8,6 +8,13 @@ pub struct ThunkManager {
     address_thunks: HashMap<u64, ThunkFn>,
 }
 
+mod generated;
+
+pub fn thunk_stub(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
 impl ThunkManager {
     pub fn new() -> Self {
         let mut manager = Self {
@@ -26,6 +33,11 @@ impl ThunkManager {
         self.address_thunks.insert(vaddr, handler);
     }
 
+    pub fn resolve_dynamic_symbol(&mut self, name: &str, vaddr: u64) {
+        let handler = self.get_thunk(name).unwrap_or(thunk_stub);
+        self.register_thunk_address(vaddr, handler);
+    }
+
     pub fn get_thunk(&self, name: &str) -> Option<ThunkFn> {
         self.wrapped_symbols.get(name).copied()
     }
@@ -35,17 +47,115 @@ impl ThunkManager {
     }
 
     fn register_builtin_thunks(&mut self) {
+        generated::register_generated_thunks(self);
+        self.register_thunk("__libc_start_main", thunk___libc_start_main);
+        self.register_thunk_address(0x7f000fff, thunk_exit);
         self.register_thunk("malloc", thunk_malloc);
+        self.register_thunk("realloc", thunk_realloc);
+        self.register_thunk("calloc", thunk_calloc);
+        self.register_thunk("ctime", thunk_ctime);
+        self.register_thunk("ctime_r", thunk_ctime_r);
+        self.register_thunk("strchr", thunk_strchr);
+        self.register_thunk("strrchr", thunk_strrchr);
+        self.register_thunk("getcwd", thunk_getcwd);
+        self.register_thunk("uname", thunk_uname);
+        self.register_thunk("printf", thunk_printf);
+        self.register_thunk("vasprintf", thunk_vasprintf);
+        self.register_thunk("asprintf", thunk_vasprintf);
+        self.register_thunk("__vasprintf_chk", thunk_vasprintf);
+        self.register_thunk("__asprintf_chk", thunk_vasprintf);
+        self.register_thunk("vsnprintf", thunk_vsnprintf);
+        self.register_thunk("snprintf", thunk_vsnprintf);
+        self.register_thunk("sprintf", thunk_vsnprintf);
+        self.register_thunk("__vsnprintf_chk", thunk_vsnprintf);
+        self.register_thunk("__snprintf_chk", thunk_vsnprintf);
+        self.register_thunk("__sprintf_chk", thunk_vsnprintf);
+        self.register_thunk("time", thunk_time);
+        self.register_thunk("localtime_r", thunk_localtime_r);
+        self.register_thunk("strftime", thunk_strftime);
+        self.register_thunk("getpwuid", thunk_getpwuid);
+        self.register_thunk("getpwuid_r", thunk_getpwuid_r);
+        self.register_thunk("__getpwuid_r", thunk_getpwuid_r);
+        self.register_thunk("getuid", thunk_getuid);
+        self.register_thunk("geteuid", thunk_geteuid);
+        self.register_thunk("getgid", thunk_getgid);
+        self.register_thunk("getegid", thunk_getegid);
+        self.register_thunk("__geteuid", thunk_geteuid);
+        self.register_thunk("__getuid", thunk_getuid);
+        self.register_thunk("fopen", thunk_fopen);
+        self.register_thunk("fopen64", thunk_fopen);
+        self.register_thunk("fgets", thunk_fgets);
+        self.register_thunk("getc_unlocked", thunk_getc_unlocked);
+        self.register_thunk("fgetc_unlocked", thunk_getc_unlocked);
+        self.register_thunk("getc", thunk_getc_unlocked);
+        self.register_thunk("fgetc", thunk_getc_unlocked);
+        self.register_thunk("memcpy", thunk_memcpy);
+        self.register_thunk("memmove", thunk_memmove);
+        self.register_thunk("strtoul", thunk_strtoul);
+        self.register_thunk("__isoc23_strtoul", thunk_strtoul);
+        self.register_thunk("strtol", thunk_strtoul);
+        self.register_thunk("__isoc23_strtol", thunk_strtoul);
+        self.register_thunk("fclose", thunk_fclose);
         self.register_thunk("free", thunk_free);
         self.register_thunk("puts", thunk_puts);
+        self.register_thunk("fputs", thunk_fputs);
+        self.register_thunk("fputs_unlocked", thunk_fputs);
         self.register_thunk("putchar", thunk_putchar);
+        self.register_thunk("putchar_unlocked", thunk_putchar);
+        self.register_thunk("fputc", thunk_putchar);
+        self.register_thunk("fputc_unlocked", thunk_putchar);
+        self.register_thunk("fwrite", thunk_fwrite);
+        self.register_thunk("fwrite_unlocked", thunk_fwrite);
         self.register_thunk("strlen", thunk_strlen);
         self.register_thunk("memcpy", thunk_memcpy);
         self.register_thunk("memset", thunk_memset);
         self.register_thunk("strcmp", thunk_strcmp);
         self.register_thunk("memcmp", thunk_memcmp);
+        self.register_thunk("strcpy", thunk_strcpy);
+        self.register_thunk("strncpy", thunk_strncpy);
+        self.register_thunk("stpcpy", thunk_stpcpy);
+        self.register_thunk("stpncpy", thunk_stpncpy);
+        self.register_thunk("strcat", thunk_strcat);
+        self.register_thunk("strdup", thunk_strdup);
+        self.register_thunk("getopt", thunk_getopt);
+        self.register_thunk("getopt_long", thunk_getopt_long);
+        self.register_thunk("getopt_long_only", thunk_getopt_long);
+        self.register_thunk("__errno_location", thunk___errno_location);
+        self.register_thunk("write", thunk_write);
+        self.register_thunk("read", thunk_read);
+        self.register_thunk("stat", thunk_stat64);
+        self.register_thunk("stat64", thunk_stat64);
+        self.register_thunk("__xstat", thunk_xstat);
+        self.register_thunk("__xstat64", thunk_xstat);
+        self.register_thunk("lstat", thunk_stat64);
+        self.register_thunk("lstat64", thunk_stat64);
+        self.register_thunk("__lxstat", thunk_xstat);
+        self.register_thunk("__lxstat64", thunk_xstat);
+        self.register_thunk("fstat", thunk_fstat64);
+        self.register_thunk("fstat64", thunk_fstat64);
+        self.register_thunk("__fxstat", thunk_fxstat);
+        self.register_thunk("__fxstat64", thunk_fxstat);
+        self.register_thunk("opendir", thunk_opendir);
+        self.register_thunk("opendir64", thunk_opendir);
+        self.register_thunk("readdir", thunk_readdir);
+        self.register_thunk("readdir64", thunk_readdir);
+        self.register_thunk("closedir", thunk_closedir);
+        self.register_thunk("closedir64", thunk_closedir);
         self.register_thunk("exit", thunk_exit);
+        self.register_thunk("abort", thunk_abort);
     }
+}
+
+#[allow(non_snake_case)]
+pub fn thunk___libc_start_main(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let main_ptr = ctx.get_x(0);
+    let argc = ctx.get_x(1);
+    let argv = ctx.get_x(2);
+    ctx.set_x(0, argc);
+    ctx.set_x(1, argv);
+    ctx.set_x(30, 0x7f000fff);
+    ctx.pc = main_ptr;
+    Ok(())
 }
 
 // Built-in Standard C Library Thunks
@@ -65,6 +175,567 @@ pub fn thunk_malloc(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(),
     Ok(())
 }
 
+pub fn thunk_realloc(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let ptr = ctx.get_x(0);
+    let size = ctx.get_x(1) as usize;
+    if size == 0 {
+        ctx.set_x(0, 0);
+        return Ok(());
+    }
+    let page_size = 4096;
+    let aligned_size = ((size + page_size - 1) / page_size) * page_size;
+    let new_ptr = mem
+        .map_anonymous(0, aligned_size)
+        .map_err(|e| format!("realloc error: {}", e))?;
+    if ptr != 0 {
+        if let Ok(old_data) = mem.read(ptr, size) {
+            let _ = mem.write(new_ptr, &old_data);
+        }
+    }
+    ctx.set_x(0, new_ptr);
+    Ok(())
+}
+
+pub fn thunk_calloc(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let nmemb = ctx.get_x(0) as usize;
+    let size = ctx.get_x(1) as usize;
+    let total = nmemb * size;
+    if total == 0 {
+        ctx.set_x(0, 0);
+        return Ok(());
+    }
+    let page_size = 4096;
+    let aligned_size = ((total + page_size - 1) / page_size) * page_size;
+    let vaddr = mem
+        .map_anonymous(0, aligned_size)
+        .map_err(|e| format!("calloc error: {}", e))?;
+    ctx.set_x(0, vaddr);
+    Ok(())
+}
+
+pub fn thunk_ctime(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let _time_ptr = ctx.get_x(0);
+    let formatted = "Thu Jan  1 00:00:00 1970\n\0";
+    let buf_addr = 0x7f010600u64;
+    let _ = mem.write(buf_addr, formatted.as_bytes());
+    ctx.set_x(0, buf_addr);
+    Ok(())
+}
+
+pub fn thunk_ctime_r(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let _time_ptr = ctx.get_x(0);
+    let buf_addr = ctx.get_x(1);
+    let formatted = "Thu Jan  1 00:00:00 1970\n\0";
+    if buf_addr != 0 {
+        let _ = mem.write(buf_addr, formatted.as_bytes());
+    }
+    ctx.set_x(0, buf_addr);
+    Ok(())
+}
+
+pub fn thunk_strchr(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let s_ptr = ctx.get_x(0);
+    let c = (ctx.get_x(1) & 0xff) as u8;
+    if s_ptr == 0 {
+        ctx.set_x(0, 0);
+        return Ok(());
+    }
+    let s_str = String::from_utf8_lossy(&mem.read_string(s_ptr).unwrap_or_default()).to_string();
+    let mut offset = 0u64;
+    loop {
+        if let Ok(b) = mem.read(s_ptr + offset, 1) {
+            let ch = b[0];
+            if ch == c {
+                tracing::info!("[Thunk: strchr] s={:?} c={:?} -> found at offset {}", s_str, c as char, offset);
+                ctx.set_x(0, s_ptr + offset);
+                return Ok(());
+            }
+            if ch == 0 {
+                break;
+            }
+            offset += 1;
+        } else {
+            break;
+        }
+    }
+    tracing::info!("[Thunk: strchr] s={:?} c={:?} -> NULL", s_str, c as char);
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_strrchr(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let s_ptr = ctx.get_x(0);
+    let c = (ctx.get_x(1) & 0xff) as u8;
+    if s_ptr == 0 {
+        ctx.set_x(0, 0);
+        return Ok(());
+    }
+    let mut offset = 0u64;
+    let mut last_match = None;
+    loop {
+        if let Ok(b) = mem.read(s_ptr + offset, 1) {
+            let ch = b[0];
+            if ch == c {
+                last_match = Some(s_ptr + offset);
+            }
+            if ch == 0 {
+                break;
+            }
+            offset += 1;
+        } else {
+            break;
+        }
+    }
+    ctx.set_x(0, last_match.unwrap_or(0));
+    Ok(())
+}
+
+pub fn thunk_getcwd(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let buf_ptr = ctx.get_x(0);
+    let size = ctx.get_x(1) as usize;
+
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_str = cwd.to_string_lossy();
+        let mut cwd_bytes = cwd_str.as_bytes().to_vec();
+        cwd_bytes.push(0);
+
+        let dest_ptr = if buf_ptr == 0 {
+            let alloc_size = if size == 0 { cwd_bytes.len() } else { size };
+            let page_size = 4096;
+            let aligned = ((alloc_size + page_size - 1) / page_size) * page_size;
+            mem.map_anonymous(0, aligned).unwrap_or(0)
+        } else {
+            buf_ptr
+        };
+
+        if dest_ptr != 0 {
+            let _ = mem.write(dest_ptr, &cwd_bytes);
+            ctx.set_x(0, dest_ptr);
+            return Ok(());
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_uname(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let buf_addr = ctx.get_x(0);
+    if buf_addr != 0 {
+        let zeros = [0u8; 390];
+        let _ = mem.write(buf_addr, &zeros);
+        let sysname = b"Linux\0";
+        let nodename = b"maarch64\0";
+        let release = b"6.1.0-maarch64\0";
+        let version = b"#1 SMP PREEMPT\0";
+        let machine = b"aarch64\0";
+
+        let _ = mem.write(buf_addr + 0, sysname);
+        let _ = mem.write(buf_addr + 65, nodename);
+        let _ = mem.write(buf_addr + 130, release);
+        let _ = mem.write(buf_addr + 195, version);
+        let _ = mem.write(buf_addr + 260, machine);
+        ctx.set_x(0, 0);
+    } else {
+        ctx.set_x(0, -1i64 as u64);
+    }
+    Ok(())
+}
+
+pub fn thunk_printf(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let fmt_ptr = ctx.get_x(0);
+    if fmt_ptr == 0 {
+        ctx.set_x(0, 0);
+        return Ok(());
+    }
+    let fmt_bytes = mem.read_string(fmt_ptr).unwrap_or_default();
+    let fmt_str = String::from_utf8_lossy(&fmt_bytes);
+
+    let mut arg_idx = 1;
+    let mut out = String::new();
+    let chars: Vec<char> = fmt_str.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '%' && i + 1 < chars.len() {
+            let spec = chars[i + 1];
+            match spec {
+                's' => {
+                    let str_ptr = ctx.get_x(arg_idx);
+                    arg_idx += 1;
+                    if str_ptr != 0 {
+                        if let Ok(s_bytes) = mem.read_string(str_ptr) {
+                            out.push_str(&String::from_utf8_lossy(&s_bytes));
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+                'u' | 'd' | 'i' => {
+                    let val = ctx.get_x(arg_idx);
+                    arg_idx += 1;
+                    out.push_str(&val.to_string());
+                    i += 2;
+                    continue;
+                }
+                'x' => {
+                    let val = ctx.get_x(arg_idx);
+                    arg_idx += 1;
+                    out.push_str(&format!("{:x}", val));
+                    i += 2;
+                    continue;
+                }
+                'p' => {
+                    let val = ctx.get_x(arg_idx);
+                    arg_idx += 1;
+                    out.push_str(&format!("0x{:x}", val));
+                    i += 2;
+                    continue;
+                }
+                '%' => {
+                    out.push('%');
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+
+    print!("{}", out);
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    ctx.set_x(0, out.len() as u64);
+    Ok(())
+}
+
+pub fn thunk_time(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let t_ptr = ctx.get_x(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if t_ptr != 0 {
+        let _ = mem.write(t_ptr, &(now as i64).to_le_bytes());
+    }
+    ctx.set_x(0, now as u64);
+    Ok(())
+}
+
+pub fn thunk_localtime_r(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let _time_ptr = ctx.get_x(0);
+    let tm_ptr = ctx.get_x(1);
+
+    if tm_ptr != 0 {
+        let zeros = [0u8; 56];
+        let _ = mem.write(tm_ptr, &zeros);
+        let hour = 12i32;
+        let mday = 26i32;
+        let mon = 6i32;
+        let year = 126i32;
+        let wday = 0i32;
+        let yday = 206i32;
+
+        let _ = mem.write(tm_ptr + 8, &hour.to_le_bytes());
+        let _ = mem.write(tm_ptr + 12, &mday.to_le_bytes());
+        let _ = mem.write(tm_ptr + 16, &mon.to_le_bytes());
+        let _ = mem.write(tm_ptr + 20, &year.to_le_bytes());
+        let _ = mem.write(tm_ptr + 24, &wday.to_le_bytes());
+        let _ = mem.write(tm_ptr + 28, &yday.to_le_bytes());
+
+        ctx.set_x(0, tm_ptr);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_strftime(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let s_ptr = ctx.get_x(0);
+    let max_size = ctx.get_x(1) as usize;
+
+    let default_str = "Sun Jul 26 12:00:00 UTC 2026\0";
+    if s_ptr != 0 && max_size > 0 {
+        let bytes = default_str.as_bytes();
+        let len = bytes.len().min(max_size);
+        let _ = mem.write(s_ptr, &bytes[..len]);
+        ctx.set_x(0, (len - 1) as u64);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_getpwuid(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let uid = ctx.get_x(0);
+    tracing::info!("[Thunk: getpwuid] uid={}", uid);
+    let host_user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let user_nul = format!("{}\0", host_user).into_bytes();
+    let name_bytes = unsafe {
+        let pw = libc::getpwuid(uid as libc::uid_t);
+        if !pw.is_null() && !(*pw).pw_name.is_null() {
+            std::ffi::CStr::from_ptr((*pw).pw_name).to_bytes_with_nul().to_vec()
+        } else if uid == 0 {
+            b"root\0".to_vec()
+        } else {
+            user_nul
+        }
+    };
+    let buf_addr = mem.map_anonymous(0, 4096).unwrap_or(0);
+    if buf_addr != 0 {
+        let name_addr = buf_addr + 128;
+        let _ = mem.write(name_addr, &name_bytes);
+
+        let _ = mem.write(buf_addr + 0, &name_addr.to_le_bytes()); // pw_name
+        let _ = mem.write(buf_addr + 8, &name_addr.to_le_bytes()); // pw_passwd
+        let _ = mem.write(buf_addr + 16, &(uid as u32).to_le_bytes()); // pw_uid
+        let _ = mem.write(buf_addr + 20, &(uid as u32).to_le_bytes()); // pw_gid
+        let _ = mem.write(buf_addr + 24, &name_addr.to_le_bytes()); // pw_gecos
+        let _ = mem.write(buf_addr + 32, &name_addr.to_le_bytes()); // pw_dir
+        let _ = mem.write(buf_addr + 40, &name_addr.to_le_bytes()); // pw_shell
+
+        ctx.set_x(0, buf_addr);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_getpwuid_r(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let uid = ctx.get_x(0);
+    let pwd_ptr = ctx.get_x(1);
+    let buf_ptr = ctx.get_x(2);
+    let buflen = ctx.get_x(3);
+    let result_ptr = ctx.get_x(4);
+    tracing::info!("[Thunk: getpwuid_r] uid={} pwd_ptr=0x{:x} buf_ptr=0x{:x} len={} res_ptr=0x{:x}", uid, pwd_ptr, buf_ptr, buflen, result_ptr);
+
+    if pwd_ptr != 0 && buf_ptr != 0 {
+        let host_user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+        let user_nul = format!("{}\0", host_user).into_bytes();
+        let name_bytes = unsafe {
+            let pw = libc::getpwuid(uid as libc::uid_t);
+            if !pw.is_null() && !(*pw).pw_name.is_null() {
+                std::ffi::CStr::from_ptr((*pw).pw_name).to_bytes_with_nul().to_vec()
+            } else if uid == 0 {
+                b"root\0".to_vec()
+            } else {
+                user_nul
+            }
+        };
+        let _ = mem.write(buf_ptr, &name_bytes);
+
+        let _ = mem.write(pwd_ptr + 0, &buf_ptr.to_le_bytes()); // pw_name
+        let _ = mem.write(pwd_ptr + 8, &buf_ptr.to_le_bytes()); // pw_passwd
+        let _ = mem.write(pwd_ptr + 16, &(uid as u32).to_le_bytes()); // pw_uid
+        let _ = mem.write(pwd_ptr + 20, &(uid as u32).to_le_bytes()); // pw_gid
+        let _ = mem.write(pwd_ptr + 24, &buf_ptr.to_le_bytes()); // pw_gecos
+        let _ = mem.write(pwd_ptr + 32, &buf_ptr.to_le_bytes()); // pw_dir
+        let _ = mem.write(pwd_ptr + 40, &buf_ptr.to_le_bytes()); // pw_shell
+
+        if result_ptr != 0 {
+            let _ = mem.write(result_ptr, &pwd_ptr.to_le_bytes());
+        }
+        ctx.set_x(0, 0); // 0 = success
+    } else {
+        if result_ptr != 0 {
+            let _ = mem.write(result_ptr, &0u64.to_le_bytes());
+        }
+        ctx.set_x(0, 2); // ENOENT
+    }
+    Ok(())
+}
+
+pub fn thunk_getuid(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let uid = unsafe { libc::getuid() };
+    ctx.set_x(0, uid as u64);
+    Ok(())
+}
+
+pub fn thunk_geteuid(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let euid = unsafe { libc::geteuid() };
+    ctx.set_x(0, euid as u64);
+    Ok(())
+}
+
+pub fn thunk_getgid(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let gid = unsafe { libc::getgid() };
+    ctx.set_x(0, gid as u64);
+    Ok(())
+}
+
+pub fn thunk_getegid(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let egid = unsafe { libc::getegid() };
+    ctx.set_x(0, egid as u64);
+    Ok(())
+}
+
+pub fn thunk_fopen(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let path_ptr = ctx.get_x(0);
+    let path_bytes = mem.read_string(path_ptr).unwrap_or_default();
+    let path = String::from_utf8_lossy(&path_bytes);
+    tracing::info!("[Thunk: fopen] path = {:?}", path);
+
+    let content = if maarch64_core::vfs::Vfs::is_passwd_path(&path) {
+        maarch64_core::vfs::Vfs::get_passwd_content()
+    } else if let Ok(mut file) = std::fs::File::open(&*path) {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        let _ = file.read_to_end(&mut buf);
+        buf
+    } else {
+        ctx.set_x(0, 0);
+        return Ok(());
+    };
+
+    let handle = mem.map_anonymous(0, 4096).unwrap_or(0);
+    if handle != 0 {
+        let buf_base = handle + 128;
+        let buf_end = buf_base + content.len() as u64;
+        let _ = mem.write(buf_base, &content);
+
+        let _ = mem.write(handle + 0, &0xfbad8000u32.to_le_bytes()); // _flags
+        let _ = mem.write(handle + 8, &buf_base.to_le_bytes()); // _IO_read_ptr
+        let _ = mem.write(handle + 16, &buf_end.to_le_bytes()); // _IO_read_end
+        let _ = mem.write(handle + 24, &buf_base.to_le_bytes()); // _IO_read_base
+        let _ = mem.write(handle + 56, &buf_base.to_le_bytes()); // _IO_buf_base
+        let _ = mem.write(handle + 64, &buf_end.to_le_bytes()); // _IO_buf_end
+
+        ctx.set_x(0, handle);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_fgets(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let s_ptr = ctx.get_x(0);
+    let size = ctx.get_x(1) as usize;
+    let stream = ctx.get_x(2);
+
+    if stream != 0 && s_ptr != 0 && size > 0 {
+        let cur_ptr = u64::from_le_bytes(mem.read(stream + 8, 8).unwrap_or_default().try_into().unwrap_or([0; 8]));
+        let end_ptr = u64::from_le_bytes(mem.read(stream + 16, 8).unwrap_or_default().try_into().unwrap_or([0; 8]));
+
+        if cur_ptr < end_ptr {
+            let mut bytes = Vec::new();
+            let mut p = cur_ptr;
+            while p < end_ptr && bytes.len() < size - 1 {
+                let b = mem.read(p, 1).unwrap_or(vec![0])[0];
+                bytes.push(b);
+                p += 1;
+                if b == b'\n' {
+                    break;
+                }
+            }
+            bytes.push(0);
+            let _ = mem.write(stream + 8, &p.to_le_bytes());
+            let _ = mem.write(s_ptr, &bytes);
+            ctx.set_x(0, s_ptr);
+            return Ok(());
+        }
+    }
+
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_getc_unlocked(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let stream = ctx.get_x(0);
+    if stream != 0 {
+        let cur_ptr = u64::from_le_bytes(mem.read(stream + 8, 8).unwrap_or_default().try_into().unwrap_or([0; 8]));
+        let end_ptr = u64::from_le_bytes(mem.read(stream + 16, 8).unwrap_or_default().try_into().unwrap_or([0; 8]));
+
+        if cur_ptr < end_ptr {
+            let b = mem.read(cur_ptr, 1).unwrap_or(vec![0])[0];
+            let _ = mem.write(stream + 8, &(cur_ptr + 1).to_le_bytes());
+            ctx.set_x(0, b as u64);
+            return Ok(());
+        }
+    }
+    ctx.set_x(0, -1i64 as u64);
+    Ok(())
+}
+
+pub fn thunk_memcpy(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dest = ctx.get_x(0);
+    let src = ctx.get_x(1);
+    let n = ctx.get_x(2) as usize;
+    if dest != 0 && src != 0 && n > 0 {
+        if let Ok(bytes) = mem.read(src, n) {
+            let _ = mem.write(dest, &bytes);
+        }
+    }
+    ctx.set_x(0, dest);
+    Ok(())
+}
+
+pub fn thunk_memmove(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    thunk_memcpy(ctx, mem)
+}
+
+pub fn thunk_strtoul(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let str_ptr = ctx.get_x(0);
+    let endptr_ptr = ctx.get_x(1);
+    let mut base = ctx.get_x(2) as u32;
+
+    if str_ptr != 0 {
+        if let Ok(s_bytes) = mem.read_string(str_ptr) {
+            let mut i = 0;
+            while i < s_bytes.len() && (s_bytes[i] as char).is_ascii_whitespace() {
+                i += 1;
+            }
+            let initial_idx = i;
+            if base == 0 {
+                if i + 1 < s_bytes.len() && s_bytes[i] == b'0' && (s_bytes[i+1] == b'x' || s_bytes[i+1] == b'X') {
+                    base = 16;
+                    i += 2;
+                } else if i < s_bytes.len() && s_bytes[i] == b'0' {
+                    base = 8;
+                } else {
+                    base = 10;
+                }
+            } else if base == 16 && i + 1 < s_bytes.len() && s_bytes[i] == b'0' && (s_bytes[i+1] == b'x' || s_bytes[i+1] == b'X') {
+                i += 2;
+            }
+
+            let _start = i;
+            let mut val: u64 = 0;
+            while i < s_bytes.len() {
+                let digit = match s_bytes[i] {
+                    b'0'..=b'9' => (s_bytes[i] - b'0') as u32,
+                    b'a'..=b'z' => (s_bytes[i] - b'a' + 10) as u32,
+                    b'A'..=b'Z' => (s_bytes[i] - b'A' + 10) as u32,
+                    _ => 255,
+                };
+                if digit >= base {
+                    break;
+                }
+                val = val.wrapping_mul(base as u64).wrapping_add(digit as u64);
+                i += 1;
+            }
+
+            if endptr_ptr != 0 {
+                let advanced = if i > initial_idx { str_ptr + i as u64 } else { str_ptr };
+                let _ = mem.write(endptr_ptr, &advanced.to_le_bytes());
+            }
+
+            ctx.set_x(0, val);
+            return Ok(());
+        }
+    }
+
+    if endptr_ptr != 0 {
+        let _ = mem.write(endptr_ptr, &str_ptr.to_le_bytes());
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_fclose(_ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    _ctx.set_x(0, 0);
+    Ok(())
+}
+
 pub fn thunk_free(_ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     // Memory arena managed, free is no-op for guest safety
     Ok(())
@@ -81,9 +752,38 @@ pub fn thunk_puts(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), S
     Ok(())
 }
 
+pub fn thunk_fputs(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let str_ptr = ctx.get_x(0);
+    let bytes = mem
+        .read_string(str_ptr)
+        .map_err(|e| format!("fputs error: {}", e))?;
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(&bytes);
+    let _ = std::io::stdout().flush();
+    ctx.set_x(0, bytes.len() as u64);
+    Ok(())
+}
+
+pub fn thunk_fwrite(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let ptr = ctx.get_x(0);
+    let size = ctx.get_x(1);
+    let nmemb = ctx.get_x(2);
+    let total = (size * nmemb) as usize;
+    if total > 0 {
+        let bytes = mem.read(ptr, total).map_err(|e| format!("fwrite error: {}", e))?;
+        use std::io::Write;
+        let _ = std::io::stdout().write_all(&bytes);
+        let _ = std::io::stdout().flush();
+    }
+    ctx.set_x(0, nmemb);
+    Ok(())
+}
+
 pub fn thunk_putchar(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let c = ctx.get_x(0) as u8;
-    print!("{}", c as char);
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(&[c]);
+    let _ = std::io::stdout().flush();
     ctx.set_x(0, c as u64);
     Ok(())
 }
@@ -97,22 +797,7 @@ pub fn thunk_strlen(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(),
     Ok(())
 }
 
-pub fn thunk_memcpy(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
-    let dest = ctx.get_x(0);
-    let src = ctx.get_x(1);
-    let n = ctx.get_x(2) as usize;
 
-    if n > 0 {
-        let src_bytes = mem
-            .read(src, n)
-            .map_err(|e| format!("memcpy src error: {}", e))?
-            .to_vec();
-        mem.write(dest, &src_bytes)
-            .map_err(|e| format!("memcpy dest error: {}", e))?;
-    }
-    ctx.set_x(0, dest);
-    Ok(())
-}
 
 pub fn thunk_memset(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let s = ctx.get_x(0);
@@ -146,6 +831,7 @@ pub fn thunk_strcmp(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(),
         std::cmp::Ordering::Equal => 0i64,
         std::cmp::Ordering::Greater => 1i64,
     };
+    tracing::info!("[Thunk: strcmp] LR=0x{:x} s1={:?} s2={:?} -> ret {}", ctx.get_x(30), s1, s2, res);
     ctx.set_x(0, res as u64);
     Ok(())
 }
@@ -164,5 +850,594 @@ pub fn thunk_memcmp(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(),
         std::cmp::Ordering::Greater => 1i64,
     };
     ctx.set_x(0, res as u64);
+    Ok(())
+}
+
+pub fn thunk_abort(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    ctx.exited = true;
+    ctx.exit_code = 134;
+    Ok(())
+}
+
+pub fn thunk_strcpy(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dest = ctx.get_x(0);
+    let src = ctx.get_x(1);
+    let mut offset = 0;
+    loop {
+        let buf = mem.read(src + offset, 1).map_err(|e| format!("strcpy src error: {}", e))?;
+        let b = buf[0];
+        mem.write(dest + offset, &[b]).map_err(|e| format!("strcpy dest error: {}", e))?;
+        if b == 0 {
+            break;
+        }
+        offset += 1;
+    }
+    ctx.set_x(0, dest);
+    Ok(())
+}
+
+pub fn thunk_strncpy(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dest = ctx.get_x(0);
+    let src = ctx.get_x(1);
+    let n = ctx.get_x(2) as usize;
+    let mut null_seen = false;
+    for i in 0..n {
+        let b = if null_seen {
+            0
+        } else {
+            let buf = mem.read(src + i as u64, 1).map_err(|e| format!("strncpy src error: {}", e))?;
+            let byte = buf[0];
+            if byte == 0 {
+                null_seen = true;
+            }
+            byte
+        };
+        mem.write(dest + i as u64, &[b]).map_err(|e| format!("strncpy dest error: {}", e))?;
+    }
+    ctx.set_x(0, dest);
+    Ok(())
+}
+
+static GETOPT_POS: Mutex<usize> = Mutex::new(1);
+
+pub fn thunk_getopt(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let _argc = ctx.get_x(0);
+    let argv_ptr = ctx.get_x(1);
+
+    let mut optind = mem.read(0x7f010300, 4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .unwrap_or(1);
+    if optind == 0 {
+        optind = 1;
+    }
+
+    if let Ok(arg_bytes) = mem.read(argv_ptr + (optind as u64) * 8, 8) {
+        let arg_addr = u64::from_le_bytes(arg_bytes.try_into().unwrap());
+        if arg_addr != 0 {
+            if let Ok(str_bytes) = mem.read_string(arg_addr) {
+                let s = String::from_utf8_lossy(&str_bytes);
+                if s.starts_with('-') && s != "-" && s != "--" {
+                    let mut pos_guard = GETOPT_POS.lock().unwrap();
+                    let pos = *pos_guard;
+                    if pos < s.len() {
+                        let ch = s.as_bytes()[pos];
+                        if pos + 1 < s.len() {
+                            *pos_guard = pos + 1;
+                        } else {
+                            *pos_guard = 1;
+                            optind += 1;
+                            let _ = mem.write(0x7f010300, &optind.to_le_bytes());
+                        }
+                        ctx.set_x(0, ch as u64);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    *GETOPT_POS.lock().unwrap() = 1;
+    let _ = mem.write(0x7f010300, &optind.to_le_bytes());
+    ctx.set_x(0, -1i64 as u64);
+    Ok(())
+}
+
+pub fn thunk_getopt_long(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    thunk_getopt(ctx, mem)
+}
+
+pub fn thunk_stpcpy(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dest = ctx.get_x(0);
+    let src = ctx.get_x(1);
+    let mut offset = 0;
+    loop {
+        let buf = mem.read(src + offset, 1).map_err(|e| format!("stpcpy src error: {}", e))?;
+        let b = buf[0];
+        mem.write(dest + offset, &[b]).map_err(|e| format!("stpcpy dest error: {}", e))?;
+        if b == 0 {
+            break;
+        }
+        offset += 1;
+    }
+    ctx.set_x(0, dest + offset);
+    Ok(())
+}
+
+pub fn thunk_stpncpy(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dest = ctx.get_x(0);
+    let src = ctx.get_x(1);
+    let n = ctx.get_x(2) as usize;
+    let mut null_seen = false;
+    let mut term_ptr = dest + n as u64;
+    for i in 0..n {
+        let b = if null_seen {
+            0
+        } else {
+            let buf = mem.read(src + i as u64, 1).map_err(|e| format!("stpncpy src error: {}", e))?;
+            let byte = buf[0];
+            if byte == 0 {
+                null_seen = true;
+                term_ptr = dest + i as u64;
+            }
+            byte
+        };
+        mem.write(dest + i as u64, &[b]).map_err(|e| format!("stpncpy dest error: {}", e))?;
+    }
+    ctx.set_x(0, term_ptr);
+    Ok(())
+}
+
+pub fn thunk_strcat(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dest = ctx.get_x(0);
+    let src = ctx.get_x(1);
+    let dest_len = mem.read_string(dest).map_err(|e| format!("strcat dest: {}", e))?.len() as u64;
+    let mut offset = 0;
+    loop {
+        let buf = mem.read(src + offset, 1).map_err(|e| format!("strcat src error: {}", e))?;
+        let b = buf[0];
+        mem.write(dest + dest_len + offset, &[b]).map_err(|e| format!("strcat dest error: {}", e))?;
+        if b == 0 {
+            break;
+        }
+        offset += 1;
+    }
+    ctx.set_x(0, dest);
+    Ok(())
+}
+
+pub fn thunk_strdup(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let src = ctx.get_x(0);
+    let bytes = mem.read_string(src).map_err(|e| format!("strdup error: {}", e))?;
+    let len = bytes.len() + 1;
+    let page_size = 4096;
+    let aligned_size = ((len + page_size - 1) / page_size) * page_size;
+    let vaddr = mem.map_anonymous(0, aligned_size).map_err(|e| format!("strdup alloc error: {}", e))?;
+    let mut buf = bytes;
+    buf.push(0);
+    mem.write(vaddr, &buf).map_err(|e| format!("strdup write error: {}", e))?;
+    ctx.set_x(0, vaddr);
+    Ok(())
+}
+
+#[allow(non_snake_case)]
+pub fn thunk___errno_location(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    ctx.set_x(0, 0x7f010500);
+    Ok(())
+}
+
+pub fn thunk_write(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let fd = ctx.get_x(0);
+    let buf_addr = ctx.get_x(1);
+    let count = ctx.get_x(2);
+    let bytes = mem.read(buf_addr, count as usize).map_err(|e| format!("write read error: {}", e))?;
+    if fd == 1 || fd == 2 {
+        use std::io::Write;
+        let _ = std::io::stdout().write_all(&bytes);
+        let _ = std::io::stdout().flush();
+    }
+    ctx.set_x(0, count);
+    Ok(())
+}
+
+pub fn thunk_read(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+use std::os::unix::fs::{DirEntryExt, MetadataExt};
+use std::sync::Mutex;
+
+struct DirState {
+    entries: Vec<(String, bool, u64)>,
+    index: usize,
+    buffer_addr: u64,
+}
+
+static DIR_HANDLES: Mutex<Option<HashMap<u64, DirState>>> = Mutex::new(None);
+static NEXT_DIR_HANDLE: Mutex<u64> = Mutex::new(0x7f030000);
+
+fn write_stat_struct(mem: &mut MemoryManager, buf_addr: u64, meta: &std::fs::Metadata) -> Result<(), String> {
+    let mode = meta.mode();
+    tracing::info!("[write_stat_struct] mode={:#o} ({:#x}) at buf_addr={:#x}", mode, mode, buf_addr);
+    let zeros = [0u8; 128];
+    let _ = mem.write(buf_addr, &zeros);
+
+    let dev = meta.dev();
+    let ino = meta.ino();
+    let nlink = meta.nlink() as u32;
+    let uid = meta.uid();
+    let gid = meta.gid();
+    let rdev = meta.rdev();
+    let size = meta.size() as i64;
+    let blksize = meta.blksize() as i32;
+    let blocks = meta.blocks() as i64;
+    let atime = meta.atime();
+    let mtime = meta.mtime();
+    let ctime = meta.ctime();
+
+    let _ = mem.write(buf_addr + 0, &dev.to_le_bytes());
+    let _ = mem.write(buf_addr + 8, &ino.to_le_bytes());
+    let _ = mem.write(buf_addr + 16, &mode.to_le_bytes());
+    let _ = mem.write(buf_addr + 20, &nlink.to_le_bytes());
+    let _ = mem.write(buf_addr + 24, &uid.to_le_bytes());
+    let _ = mem.write(buf_addr + 28, &gid.to_le_bytes());
+    let _ = mem.write(buf_addr + 32, &rdev.to_le_bytes());
+    let _ = mem.write(buf_addr + 48, &size.to_le_bytes());
+    let _ = mem.write(buf_addr + 56, &blksize.to_le_bytes());
+    let _ = mem.write(buf_addr + 64, &blocks.to_le_bytes());
+    let _ = mem.write(buf_addr + 72, &atime.to_le_bytes());
+    let _ = mem.write(buf_addr + 88, &mtime.to_le_bytes());
+    let _ = mem.write(buf_addr + 104, &ctime.to_le_bytes());
+    Ok(())
+}
+
+pub fn thunk_stat64(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    thunk_xstat(ctx, mem)
+}
+
+pub fn thunk_xstat(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let arg0 = ctx.get_x(0);
+    let path_ptr;
+    let buf_addr;
+    if arg0 <= 3 {
+        path_ptr = ctx.get_x(1);
+        buf_addr = ctx.get_x(2);
+    } else {
+        path_ptr = ctx.get_x(0);
+        buf_addr = ctx.get_x(1);
+    }
+    let path_bytes = mem.read_string(path_ptr).unwrap_or_default();
+    let path_str = String::from_utf8_lossy(&path_bytes);
+    let p = if path_str.is_empty() { "." } else { &path_str };
+    if let Ok(meta) = std::fs::metadata(p) {
+        let _ = write_stat_struct(mem, buf_addr, &meta);
+        let mode_bytes = mem.read(buf_addr + 16, 4).unwrap_or_default();
+        let read_mode = u32::from_le_bytes(mode_bytes.try_into().unwrap_or([0; 4]));
+        tracing::info!("[stat DEBUG] path='{}', buf_addr={:#x}, wrote mode={:#o}, read_back={:#o}", p, buf_addr, meta.mode(), read_mode);
+        ctx.set_x(0, 0);
+    } else {
+        ctx.set_x(0, 0xffffffffffffffff);
+    }
+    Ok(())
+}
+
+pub fn thunk_fstat64(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    thunk_fxstat(ctx, mem)
+}
+
+pub fn thunk_fxstat(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let arg0 = ctx.get_x(0);
+    let buf_addr = if arg0 <= 3 { ctx.get_x(2) } else { ctx.get_x(1) };
+    if let Ok(meta) = std::fs::metadata(".") {
+        let _ = write_stat_struct(mem, buf_addr, &meta);
+        ctx.set_x(0, 0);
+    } else {
+        ctx.set_x(0, 0xffffffffffffffff);
+    }
+    Ok(())
+}
+
+pub fn thunk_opendir(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let path_ptr = ctx.get_x(0);
+    let path_bytes = mem.read_string(path_ptr).unwrap_or_default();
+    let path_str = String::from_utf8_lossy(&path_bytes);
+    let p = if path_str.is_empty() { "." } else { &path_str };
+
+    if let Ok(read_dir) = std::fs::read_dir(p) {
+        let mut entries = vec![
+            (".".to_string(), true, 1u64),
+            ("..".to_string(), true, 1u64),
+        ];
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let ino = entry.ino();
+            entries.push((name, is_dir, ino));
+        }
+
+        let mut handle_guard = NEXT_DIR_HANDLE.lock().unwrap();
+        let handle = *handle_guard;
+        *handle_guard += 0x1000;
+
+        let buf_addr = mem.map_anonymous(0, 4096).unwrap_or(0);
+
+        let mut map_guard = DIR_HANDLES.lock().unwrap();
+        let map = map_guard.get_or_insert_with(HashMap::new);
+        map.insert(handle, DirState {
+            entries,
+            index: 0,
+            buffer_addr: buf_addr,
+        });
+
+        ctx.set_x(0, handle);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_readdir(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let handle = ctx.get_x(0);
+    let mut map_guard = DIR_HANDLES.lock().unwrap();
+    if let Some(map) = map_guard.as_mut() {
+        if let Some(state) = map.get_mut(&handle) {
+            if state.index < state.entries.len() {
+                let (name, is_dir, ino) = &state.entries[state.index];
+                state.index += 1;
+
+                let buf = state.buffer_addr;
+                let _ = mem.write(buf + 0, &ino.to_le_bytes());
+                let _ = mem.write(buf + 8, &(state.index as i64).to_le_bytes());
+                let reclen = 276u16;
+                let _ = mem.write(buf + 16, &reclen.to_le_bytes());
+                let dtype = if *is_dir { 4u8 } else { 8u8 }; // DT_DIR=4, DT_REG=8
+                let _ = mem.write(buf + 18, &[dtype]);
+
+                let mut name_bytes = name.as_bytes().to_vec();
+                name_bytes.push(0);
+                let _ = mem.write(buf + 19, &name_bytes);
+
+                ctx.set_x(0, buf);
+                return Ok(());
+            }
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_closedir(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let handle = ctx.get_x(0);
+    let mut map_guard = DIR_HANDLES.lock().unwrap();
+    if let Some(map) = map_guard.as_mut() {
+        map.remove(&handle);
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_vasprintf(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let strp = ctx.get_x(0);
+    let fmt_ptr = ctx.get_x(1);
+    let ap_ptr = ctx.get_x(2);
+
+    if strp == 0 || fmt_ptr == 0 {
+        ctx.set_x(0, (-1i64) as u64);
+        return Ok(());
+    }
+
+    let fmt_bytes = mem.read_string(fmt_ptr).unwrap_or_default();
+    let fmt_str = String::from_utf8_lossy(&fmt_bytes);
+
+    let mut out = String::new();
+    let chars: Vec<char> = fmt_str.chars().collect();
+
+    let read_u32 = |m: &MemoryManager, a: u64| -> u32 {
+        m.read(a, 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).unwrap_or(0)
+    };
+    let read_u64 = |m: &MemoryManager, a: u64| -> u64 {
+        m.read(a, 8).map(|b| u64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0)
+    };
+
+    let mut reg_idx = 2;
+    let mut gr_offs = if ap_ptr != 0 {
+        read_u32(mem, ap_ptr + 24) as i32
+    } else {
+        0
+    };
+    let gr_top = if ap_ptr != 0 {
+        read_u64(mem, ap_ptr + 8)
+    } else {
+        0
+    };
+    let mut stack_ptr = if ap_ptr != 0 {
+        read_u64(mem, ap_ptr)
+    } else {
+        0
+    };
+
+    let mut get_next_arg = |reg_i: usize, mem: &MemoryManager, ctx: &CpuContext| -> u64 {
+        if ap_ptr != 0 && gr_top != 0 {
+            if gr_offs < 0 {
+                let addr = (gr_top as i64 + gr_offs as i64) as u64;
+                gr_offs += 8;
+                read_u64(mem, addr)
+            } else {
+                let addr = stack_ptr;
+                stack_ptr += 8;
+                read_u64(mem, addr)
+            }
+        } else {
+            ctx.get_x(reg_i)
+        }
+    };
+
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '%' && i + 1 < chars.len() {
+            let spec = chars[i + 1];
+            match spec {
+                's' => {
+                    let str_ptr = get_next_arg(reg_idx, mem, ctx);
+                    reg_idx += 1;
+                    if str_ptr != 0 {
+                        if let Ok(s_bytes) = mem.read_string(str_ptr) {
+                            out.push_str(&String::from_utf8_lossy(&s_bytes));
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+                'u' | 'd' | 'i' => {
+                    let val = get_next_arg(reg_idx, mem, ctx);
+                    reg_idx += 1;
+                    out.push_str(&val.to_string());
+                    i += 2;
+                    continue;
+                }
+                'x' => {
+                    let val = get_next_arg(reg_idx, mem, ctx);
+                    reg_idx += 1;
+                    out.push_str(&format!("{:x}", val));
+                    i += 2;
+                    continue;
+                }
+                '%' => {
+                    out.push('%');
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+
+    let buf_len = out.len() + 1;
+    let page_size = 4096;
+    let aligned_size = ((buf_len + page_size - 1) / page_size) * page_size;
+    let vaddr = mem
+        .map_anonymous(0, aligned_size)
+        .map_err(|e| format!("vasprintf malloc error: {}", e))?;
+
+    mem.write(vaddr, out.as_bytes())
+        .map_err(|e| format!("vasprintf write error: {}", e))?;
+    mem.write(vaddr + out.len() as u64, &[0u8])
+        .map_err(|e| format!("vasprintf null byte write error: {}", e))?;
+
+    let buf_ptr_bytes = vaddr.to_le_bytes();
+    mem.write(strp, &buf_ptr_bytes)
+        .map_err(|e| format!("vasprintf strp write error: {}", e))?;
+
+    ctx.set_x(0, out.len() as u64);
+    Ok(())
+}
+
+pub fn thunk_vsnprintf(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let buf_ptr = ctx.get_x(0);
+    let max_len = ctx.get_x(1) as usize;
+    let fmt_ptr = ctx.get_x(2);
+    let ap_ptr = ctx.get_x(3);
+
+    if fmt_ptr == 0 {
+        ctx.set_x(0, 0);
+        return Ok(());
+    }
+
+    let fmt_bytes = mem.read_string(fmt_ptr).unwrap_or_default();
+    let fmt_str = String::from_utf8_lossy(&fmt_bytes);
+
+    let read_u32 = |m: &MemoryManager, a: u64| -> u32 {
+        m.read(a, 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).unwrap_or(0)
+    };
+    let read_u64 = |m: &MemoryManager, a: u64| -> u64 {
+        m.read(a, 8).map(|b| u64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0)
+    };
+
+    let mut reg_idx = 3;
+    let mut gr_offs = if ap_ptr != 0 {
+        read_u32(mem, ap_ptr + 24) as i32
+    } else {
+        0
+    };
+    let gr_top = if ap_ptr != 0 {
+        read_u64(mem, ap_ptr + 8)
+    } else {
+        0
+    };
+    let mut stack_ptr = if ap_ptr != 0 {
+        read_u64(mem, ap_ptr)
+    } else {
+        0
+    };
+
+    let mut get_next_arg = |reg_i: usize, mem: &MemoryManager, ctx: &CpuContext| -> u64 {
+        if ap_ptr != 0 && gr_top != 0 {
+            if gr_offs < 0 {
+                let addr = (gr_top as i64 + gr_offs as i64) as u64;
+                gr_offs += 8;
+                read_u64(mem, addr)
+            } else {
+                let addr = stack_ptr;
+                stack_ptr += 8;
+                read_u64(mem, addr)
+            }
+        } else {
+            ctx.get_x(reg_i)
+        }
+    };
+
+    let mut out = String::new();
+    let chars: Vec<char> = fmt_str.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '%' && i + 1 < chars.len() {
+            let spec = chars[i + 1];
+            match spec {
+                's' => {
+                    let str_ptr = get_next_arg(reg_idx, mem, ctx);
+                    reg_idx += 1;
+                    if str_ptr != 0 {
+                        if let Ok(s_bytes) = mem.read_string(str_ptr) {
+                            out.push_str(&String::from_utf8_lossy(&s_bytes));
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+                'u' | 'd' | 'i' => {
+                    let val = get_next_arg(reg_idx, mem, ctx);
+                    reg_idx += 1;
+                    out.push_str(&val.to_string());
+                    i += 2;
+                    continue;
+                }
+                'x' => {
+                    let val = get_next_arg(reg_idx, mem, ctx);
+                    reg_idx += 1;
+                    out.push_str(&format!("{:x}", val));
+                    i += 2;
+                    continue;
+                }
+                '%' => {
+                    out.push('%');
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+
+    if buf_ptr != 0 && max_len > 0 {
+        let write_len = out.len().min(max_len - 1);
+        let _ = mem.write(buf_ptr, &out.as_bytes()[..write_len]);
+        let _ = mem.write(buf_ptr + write_len as u64, &[0u8]);
+    }
+
+    ctx.set_x(0, out.len() as u64);
     Ok(())
 }
