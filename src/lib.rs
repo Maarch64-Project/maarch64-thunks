@@ -128,6 +128,10 @@ impl ThunkManager {
         self.register_thunk("close", thunk_close);
         self.register_thunk("sendfile", thunk_sendfile);
         self.register_thunk("sendfile64", thunk_sendfile);
+        self.register_thunk("sysconf", thunk_sysconf);
+        self.register_thunk("pthread_attr_getstack", thunk_pthread_attr_getstack);
+        self.register_thunk("pthread_getattr_np", thunk_pthread_getattr_np);
+        self.register_thunk("pthread_self", thunk_pthread_self);
         self.register_thunk("stat", thunk_stat64);
         self.register_thunk("stat64", thunk_stat64);
         self.register_thunk("__xstat", thunk_xstat);
@@ -147,15 +151,24 @@ impl ThunkManager {
         self.register_thunk("closedir", thunk_closedir);
         self.register_thunk("closedir64", thunk_closedir);
         self.register_thunk("exit", thunk_exit);
+        self.register_thunk("exit_group", thunk_exit);
+        self.register_thunk("_exit", thunk_exit);
+        self.register_thunk("_Exit", thunk_exit);
         self.register_thunk("abort", thunk_abort);
     }
 }
 
 #[allow(non_snake_case)]
-pub fn thunk___libc_start_main(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+pub fn thunk___libc_start_main(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let main_ptr = ctx.get_x(0);
     let argc = ctx.get_x(1);
     let argv = ctx.get_x(2);
+
+    if ctx.tpidr_el0 == 0 {
+        let tls_addr = mem.map_anonymous(0, 4096).unwrap_or(0);
+        ctx.tpidr_el0 = tls_addr;
+    }
+
     ctx.set_x(0, argc);
     ctx.set_x(1, argv);
     ctx.set_x(30, 0x7f000fff);
@@ -1123,6 +1136,44 @@ pub fn thunk_sendfile(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<
     }
 
     ctx.set_x(0, total_written as u64);
+    Ok(())
+}
+
+pub fn thunk_sysconf(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let name = ctx.get_x(0) as i32;
+    let val = match name {
+        29 | 30 => 4096, // _SC_PAGESIZE / _SC_PAGE_SIZE
+        83 | 84 => 4,    // _SC_NPROCESSORS_CONF / _SC_NPROCESSORS_ONLN
+        _ => unsafe { libc::sysconf(name) },
+    };
+    ctx.set_x(0, val as u64);
+    Ok(())
+}
+
+pub fn thunk_pthread_attr_getstack(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let stackaddr_ptr = ctx.get_x(1);
+    let stacksize_ptr = ctx.get_x(2);
+    let default_stack_base: u64 = 0x7fffefe00000;
+    let default_stack_size: u64 = 8 * 1024 * 1024; // 8MB
+
+    if stackaddr_ptr != 0 {
+        let _ = mem.write(stackaddr_ptr, &default_stack_base.to_le_bytes());
+    }
+    if stacksize_ptr != 0 {
+        let _ = mem.write(stacksize_ptr, &default_stack_size.to_le_bytes());
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_pthread_getattr_np(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_pthread_self(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let tid = if ctx.tpidr_el0 != 0 { ctx.tpidr_el0 } else { 1 };
+    ctx.set_x(0, tid);
     Ok(())
 }
 
