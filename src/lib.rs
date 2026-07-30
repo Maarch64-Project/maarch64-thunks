@@ -111,6 +111,7 @@ impl ThunkManager {
         self.register_thunk("memset", thunk_memset);
         self.register_thunk("strcmp", thunk_strcmp);
         self.register_thunk("memcmp", thunk_memcmp);
+        self.register_thunk("bcmp", thunk_memcmp);
         self.register_thunk("strcpy", thunk_strcpy);
         self.register_thunk("strncpy", thunk_strncpy);
         self.register_thunk("stpcpy", thunk_stpcpy);
@@ -122,6 +123,7 @@ impl ThunkManager {
         self.register_thunk("getopt_long_only", thunk_getopt_long);
         self.register_thunk("__errno_location", thunk___errno_location);
         self.register_thunk("write", thunk_write);
+        self.register_thunk("writev", thunk_writev);
         self.register_thunk("read", thunk_read);
         self.register_thunk("open", thunk_open);
         self.register_thunk("open64", thunk_open);
@@ -1058,6 +1060,33 @@ pub fn thunk_write(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), 
         let _ = std::io::stdout().flush();
     }
     ctx.set_x(0, count);
+    Ok(())
+}
+
+pub fn thunk_writev(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let fd = ctx.get_x(0);
+    let iov_ptr = ctx.get_x(1);
+    let iovcnt = ctx.get_x(2) as usize;
+
+    let mut total_written = 0u64;
+    for i in 0..iovcnt {
+        let cur_iov = iov_ptr + (i * 16) as u64;
+        let base_bytes = mem.read(cur_iov, 8).map_err(|e| format!("writev iov_base read error: {}", e))?;
+        let len_bytes = mem.read(cur_iov + 8, 8).map_err(|e| format!("writev iov_len read error: {}", e))?;
+        let iov_base = u64::from_le_bytes(base_bytes.try_into().unwrap());
+        let iov_len = u64::from_le_bytes(len_bytes.try_into().unwrap());
+
+        if iov_len > 0 {
+            let bytes = mem.read(iov_base, iov_len as usize).map_err(|e| format!("writev data read error: {}", e))?;
+            if fd == 1 || fd == 2 {
+                use std::io::Write;
+                let _ = std::io::stdout().write_all(&bytes);
+                let _ = std::io::stdout().flush();
+            }
+            total_written += iov_len;
+        }
+    }
+    ctx.set_x(0, total_written);
     Ok(())
 }
 
