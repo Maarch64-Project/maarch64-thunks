@@ -11,8 +11,36 @@ pub struct ThunkManager {
 mod generated;
 pub mod gpu;
 pub mod audio;
+pub mod vlc;
 
 pub fn thunk_stub(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_dlsym(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let _handle = ctx.get_x(0);
+    let symbol_ptr = ctx.get_x(1);
+    if symbol_ptr != 0 {
+        if let Ok(symbol_bytes) = mem.read_string(symbol_ptr) {
+            let name = String::from_utf8_lossy(&symbol_bytes);
+            println!("[Maarch64 Thunk] dlsym(symbol={:?})", name);
+            let addr = match name.as_ref() {
+                "libvlc_new" => 0x7f000130,
+                "libvlc_set_app_id" => 0x7f000138,
+                "libvlc_set_user_agent" => 0x7f000100,
+                "libvlc_get_version" => 0x7f0000e0,
+                "libvlc_get_changeset" => 0x7f000058,
+                "libvlc_release" => 0x7f0000d8,
+                "libvlc_add_intf" => 0x7f0000c8,
+                "libvlc_playlist_play" => 0x7f000080,
+                "libvlc_set_exit_handler" => 0x7f000090,
+                _ => 0x7f000000,
+            };
+            ctx.set_x(0, addr);
+            return Ok(());
+        }
+    }
     ctx.set_x(0, 0);
     Ok(())
 }
@@ -52,6 +80,8 @@ impl ThunkManager {
         generated::register_generated_thunks(self);
         gpu::register_gpu_thunks(&mut self.wrapped_symbols);
         audio::register_audio_thunks(&mut self.wrapped_symbols);
+        vlc::register_vlc_thunks(&mut self.wrapped_symbols);
+        self.register_thunk("dlsym", thunk_dlsym);
         self.register_thunk("__libc_start_main", thunk___libc_start_main);
         self.register_thunk_address(0x7f000fff, thunk_exit);
         self.register_thunk("malloc", thunk_malloc);
@@ -181,11 +211,13 @@ pub fn thunk___libc_start_main(ctx: &mut CpuContext, mem: &mut MemoryManager) ->
     let envp = ctx.get_x(3);
     let envp_ptr = if envp != 0 { envp } else { argv + (argc + 1) * 8 };
 
+    let effective_main = if main_ptr < 0x400000 { main_ptr + 0x400000 } else { main_ptr };
+
     ctx.set_x(0, argc);
     ctx.set_x(1, argv);
     ctx.set_x(2, envp_ptr);
     ctx.set_x(30, 0x7f000fff);
-    ctx.pc = main_ptr;
+    ctx.pc = effective_main;
     Ok(())
 }
 
