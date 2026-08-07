@@ -15,6 +15,8 @@ impl GpuThunkRegistry {
             ("libGL.so.1", "libGL.so"),
             ("libEGL.so.1", "libEGL.so"),
             ("libX11.so.6", "libX11.so"),
+            ("libwayland-client.so.0", "libwayland-client.so"),
+            ("libwayland-egl.so.1", "libwayland-egl.so"),
             ("libvulkan.so.1", "libvulkan.so"),
         ];
 
@@ -276,6 +278,24 @@ pub fn thunk_glXSwapBuffers(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> R
     Ok(())
 }
 
+pub fn thunk_wl_display_connect(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let name_ptr = ctx.get_x(0);
+    tracing::debug!("[thunk] wl_display_connect(name_ptr={:#x})", name_ptr);
+    open_host_x11_window();
+    ctx.set_x(0, 0x2000); // Mock wl_display handle
+    Ok(())
+}
+
+pub fn thunk_wl_egl_window_create(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let surface = ctx.get_x(0);
+    let width = ctx.get_x(1) as i32;
+    let height = ctx.get_x(2) as i32;
+    tracing::debug!("[thunk] wl_egl_window_create(surface={:#x}, w={}, h={})", surface, width, height);
+    open_host_x11_window();
+    ctx.set_x(0, 0x3000); // Mock wl_egl_window handle
+    Ok(())
+}
+
 pub fn register_gpu_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
     // Force initialization of host library resolution
     let _registry = get_gpu_registry();
@@ -295,4 +315,7 @@ pub fn register_gpu_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
 
     thunks.insert("glXQueryExtension".to_string(), thunk_glXQueryExtension);
     thunks.insert("glXSwapBuffers".to_string(), thunk_glXSwapBuffers);
+
+    thunks.insert("wl_display_connect".to_string(), thunk_wl_display_connect);
+    thunks.insert("wl_egl_window_create".to_string(), thunk_wl_egl_window_create);
 }
