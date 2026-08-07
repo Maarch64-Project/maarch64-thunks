@@ -45,11 +45,9 @@ pub fn thunk_dlsym(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), 
     Ok(())
 }
 
-pub fn thunk_sigwait(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    println!("[Maarch64 Thunk] sigwait - keeping main loop active for host GUI window...");
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+pub fn thunk_sigwait(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    println!("[Maarch64 Thunk] sigwait - delegating to host event wait loop...");
+    vlc::thunk_libvlc_wait(ctx, mem)
 }
 
 impl ThunkManager {

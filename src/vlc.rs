@@ -2,6 +2,9 @@
 
 use maarch64_core::{cpu::CpuContext, memory::MemoryManager};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+static LAST_VLC_INSTANCE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 pub struct VlcRegistry {
     loaded_libraries: HashMap<String, libloading::Library>,
@@ -38,6 +41,10 @@ pub fn get_vlc_registry() -> &'static VlcRegistry {
     VLC_REGISTRY.get_or_init(VlcRegistry::new)
 }
 
+pub fn get_active_vlc_instance() -> *mut std::ffi::c_void {
+    LAST_VLC_INSTANCE.load(Ordering::SeqCst)
+}
+
 pub fn thunk_libvlc_new(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let argc = ctx.get_x(0) as i32;
     let argv_ptr = ctx.get_x(1);
@@ -67,6 +74,7 @@ pub fn thunk_libvlc_new(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result
 
                 let handle = vlc_new(c_ptrs.len() as i32, c_ptrs.as_ptr());
                 if !handle.is_null() {
+                    LAST_VLC_INSTANCE.store(handle, Ordering::SeqCst);
                     println!("[Maarch64 VLC Passthrough] SUCCESS: Created Host libvlc Instance ({:p})", handle);
                     ctx.set_x(0, handle as u64);
                     return Ok(());
@@ -92,6 +100,7 @@ pub fn thunk_libvlc_release(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> R
             }
         }
     }
+    LAST_VLC_INSTANCE.store(std::ptr::null_mut(), Ordering::SeqCst);
     ctx.set_x(0, 0);
     Ok(())
 }
@@ -226,23 +235,29 @@ pub fn thunk_libvlc_playlist_play(ctx: &mut CpuContext, _mem: &mut MemoryManager
 
 pub fn thunk_libvlc_wait(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let inst_ptr = ctx.get_x(0);
-    println!("[Maarch64 VLC Passthrough] libvlc_wait(instance=0x{:x})", inst_ptr);
-    let registry = get_vlc_registry();
-    if let Some(vlc_lib) = registry.get_library("libvlc.so.5") {
-        unsafe {
-            type LibVlcWaitFn = unsafe extern "C" fn(*mut std::ffi::c_void);
-            if let Ok(vlc_wait) = vlc_lib.get::<LibVlcWaitFn>(b"libvlc_wait\0") {
-                if inst_ptr != 0 && inst_ptr != 0x6000 {
-                    vlc_wait(inst_ptr as *mut _);
+    let target_ptr = if inst_ptr != 0 && inst_ptr != 0x6000 {
+        inst_ptr as *mut std::ffi::c_void
+    } else {
+        LAST_VLC_INSTANCE.load(Ordering::SeqCst)
+    };
+
+    println!("[Maarch64 VLC Passthrough] libvlc_wait(instance={:p})", target_ptr);
+    if !target_ptr.is_null() {
+        let registry = get_vlc_registry();
+        if let Some(vlc_lib) = registry.get_library("libvlc.so.5") {
+            unsafe {
+                type LibVlcWaitFn = unsafe extern "C" fn(*mut std::ffi::c_void);
+                if let Ok(vlc_wait) = vlc_lib.get::<LibVlcWaitFn>(b"libvlc_wait\0") {
+                    vlc_wait(target_ptr);
+                    println!("[Maarch64 VLC Passthrough] Host VLC window closed cleanly.");
                     ctx.set_x(0, 0);
                     return Ok(());
                 }
             }
         }
     }
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    ctx.set_x(0, 0);
+    Ok(())
 }
 
 pub fn register_vlc_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
