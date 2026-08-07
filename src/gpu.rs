@@ -48,15 +48,26 @@ pub fn get_gpu_registry() -> &'static GpuThunkRegistry {
     GPU_REGISTRY.get_or_init(GpuThunkRegistry::new)
 }
 
-struct NativeWindowContext {
-    display: *mut std::ffi::c_void,
-    window: u64,
+struct GlobalGpuState {
+    host_x11_dpy: *mut std::ffi::c_void,
+    host_window: u64,
+    host_egl_dpy: *mut std::ffi::c_void,
+    host_egl_config: *mut std::ffi::c_void,
+    host_egl_ctx: *mut std::ffi::c_void,
+    host_egl_surface: *mut std::ffi::c_void,
 }
 
-unsafe impl Send for NativeWindowContext {}
-unsafe impl Sync for NativeWindowContext {}
+unsafe impl Send for GlobalGpuState {}
+unsafe impl Sync for GlobalGpuState {}
 
-static NATIVE_WINDOW: Mutex<Option<NativeWindowContext>> = Mutex::new(None);
+static GPU_STATE: Mutex<GlobalGpuState> = Mutex::new(GlobalGpuState {
+    host_x11_dpy: std::ptr::null_mut(),
+    host_window: 0,
+    host_egl_dpy: std::ptr::null_mut(),
+    host_egl_config: std::ptr::null_mut(),
+    host_egl_ctx: std::ptr::null_mut(),
+    host_egl_surface: std::ptr::null_mut(),
+});
 
 fn write_gpu_string(mem: &mut MemoryManager, s: &str) -> u64 {
     let bytes = s.as_bytes();
@@ -71,27 +82,20 @@ fn write_gpu_string(mem: &mut MemoryManager, s: &str) -> u64 {
 // ----------------------------------------------------------------------------
 pub fn thunk_XOpenDisplay(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let name_ptr = ctx.get_x(0);
-    let name = if name_ptr != 0 {
-        mem.read_string(name_ptr).ok()
-    } else {
-        None
-    };
-
-    println!("[Maarch64 GPU Thunk] XOpenDisplay(display_name={:?})", name);
+    let name = if name_ptr != 0 { mem.read_string(name_ptr).ok() } else { None };
+    println!("[Maarch64 GPU Passthrough] XOpenDisplay(display={:?})", name);
 
     let registry = get_gpu_registry();
     if let Some(x11_lib) = registry.get_library("libX11.so.6") {
         unsafe {
             type XOpenDisplayFn = unsafe extern "C" fn(*const std::os::raw::c_char) -> *mut std::ffi::c_void;
             if let Ok(open_dpy) = x11_lib.get::<XOpenDisplayFn>(b"XOpenDisplay\0") {
-                let c_ptr = if let Some(ref bytes) = name {
-                    bytes.as_ptr() as *const _
-                } else {
-                    std::ptr::null()
-                };
+                let c_ptr = if let Some(ref bytes) = name { bytes.as_ptr() as *const _ } else { std::ptr::null() };
                 let dpy = open_dpy(c_ptr);
                 if !dpy.is_null() {
-                    println!("[Maarch64 GPU Thunk] Connected to Host X11 Display at {:p}", dpy);
+                    let mut state = GPU_STATE.lock().unwrap();
+                    state.host_x11_dpy = dpy;
+                    println!("[Maarch64 GPU Passthrough] Connected to Host X11 Display ({:p})", dpy);
                     ctx.set_x(0, dpy as u64);
                     return Ok(());
                 }
@@ -99,74 +103,144 @@ pub fn thunk_XOpenDisplay(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Resu
         }
     }
 
-    println!("[Maarch64 GPU Thunk] Fallback mock X11 display handle (0x1000)");
     ctx.set_x(0, 0x1000);
     Ok(())
 }
 
 pub fn thunk_XCloseDisplay(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let dpy = ctx.get_x(0);
-    println!("[Maarch64 GPU Thunk] XCloseDisplay(dpy={:#x})", dpy);
+    println!("[Maarch64 GPU Passthrough] XCloseDisplay(dpy={:#x})", dpy);
     ctx.set_x(0, 0);
     Ok(())
 }
 
 pub fn thunk_XGetVisualInfo(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
+    let dpy_ptr = ctx.get_x(0);
     let vinfo_mask = ctx.get_x(1);
+    let vinfo_template = ctx.get_x(2);
     let nitems_return = ctx.get_x(3);
-    println!("[Maarch64 GPU Thunk] XGetVisualInfo(dpy={:#x}, mask={:#x})", dpy, vinfo_mask);
+    println!("[Maarch64 GPU Passthrough] XGetVisualInfo(mask={:#x})", vinfo_mask);
 
-    if nitems_return != 0 {
-        let _ = mem.write(nitems_return, &1i32.to_le_bytes());
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XGetVisualInfoFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const u8, *mut i32) -> *mut u8;
+            if let Ok(get_vinfo) = x11_lib.get::<XGetVisualInfoFn>(b"XGetVisualInfo\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                let template_bytes = if vinfo_template != 0 {
+                    mem.read(vinfo_template, 128).unwrap_or_else(|_| vec![0u8; 128])
+                } else {
+                    vec![0u8; 128]
+                };
+                let mut nitems = 0i32;
+                let vinfo_ptr = get_vinfo(host_dpy, vinfo_mask, template_bytes.as_ptr(), &mut nitems);
+                if !vinfo_ptr.is_null() {
+                    if nitems_return != 0 { let _ = mem.write(nitems_return, &nitems.to_le_bytes()).unwrap_or_default(); }
+                    ctx.set_x(0, vinfo_ptr as u64);
+                    return Ok(());
+                }
+            }
+        }
     }
 
-    // Allocate mock XVisualInfo (size: 64 bytes)
-    let addr = mem.map_anonymous(0, 64).unwrap_or(0x7f05_0000);
+    if nitems_return != 0 { let _ = mem.write(nitems_return, &1i32.to_le_bytes()).unwrap_or_default(); }
+    let addr = mem.map_anonymous(0, 256).unwrap_or(0x7f05_0000);
     ctx.set_x(0, addr);
     Ok(())
 }
 
 pub fn thunk_XCreateWindow(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
-    let parent = ctx.get_x(1);
-    let w = ctx.get_x(4) as u32;
-    let h = ctx.get_x(5) as u32;
-    println!("[Maarch64 GPU Thunk] XCreateWindow(dpy={:#x}, parent={:#x}, w={}, h={})", dpy, parent, w, h);
-    ctx.set_x(0, 0x2000001); // Mock X11 Window ID
+    let dpy_ptr = ctx.get_x(0);
+    let width = ctx.get_x(4) as u32;
+    let height = ctx.get_x(5) as u32;
+    println!("[Maarch64 GPU Passthrough] XCreateWindow(w={}, h={})", width, height);
+
+    let mut state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XOpenDisplayFn = unsafe extern "C" fn(*const std::os::raw::c_char) -> *mut std::ffi::c_void;
+            type XDefaultScreenFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+            type XRootWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> u64;
+            type XBlackPixelFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> u64;
+            type XCreateSimpleWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, i32, i32, u32, u32, u32, u64, u64) -> u64;
+            type XStoreNameFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const std::os::raw::c_char) -> i32;
+            type XMapWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> i32;
+            type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+
+            if let (Ok(open_dpy), Ok(default_screen), Ok(root_win), Ok(black_pixel), Ok(create_win), Ok(store_name), Ok(map_win), Ok(flush_dpy)) = (
+                x11_lib.get::<XOpenDisplayFn>(b"XOpenDisplay\0"),
+                x11_lib.get::<XDefaultScreenFn>(b"XDefaultScreen\0"),
+                x11_lib.get::<XRootWindowFn>(b"XRootWindow\0"),
+                x11_lib.get::<XBlackPixelFn>(b"XBlackPixel\0"),
+                x11_lib.get::<XCreateSimpleWindowFn>(b"XCreateSimpleWindow\0"),
+                x11_lib.get::<XStoreNameFn>(b"XStoreName\0"),
+                x11_lib.get::<XMapWindowFn>(b"XMapWindow\0"),
+                x11_lib.get::<XFlushFn>(b"XFlush\0"),
+            ) {
+                let dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { open_dpy(std::ptr::null()) };
+                if !dpy.is_null() {
+                    let scr = default_screen(dpy);
+                    let root = root_win(dpy, scr);
+                    let black = black_pixel(dpy, scr);
+                    let win = create_win(dpy, root, 100, 100, if width > 0 { width } else { 800 }, if height > 0 { height } else { 600 }, 2, black, 0x003399FFu64);
+                    store_name(dpy, win, "Maarch64 AArch64 3D GPU Window\0".as_ptr() as *const _);
+                    map_win(dpy, win);
+                    flush_dpy(dpy);
+
+                    state.host_x11_dpy = dpy;
+                    state.host_window = win;
+                    println!("[Maarch64 GPU Passthrough] SUCCESS: Created Native X11 Window ID {:#x}", win);
+                    ctx.set_x(0, win);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    ctx.set_x(0, 0x2000001);
     Ok(())
 }
 
-pub fn thunk_XCreateSimpleWindow(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
-    let parent = ctx.get_x(1);
-    let w = ctx.get_x(4) as u32;
-    let h = ctx.get_x(5) as u32;
-    println!("[Maarch64 GPU Thunk] XCreateSimpleWindow(dpy={:#x}, parent={:#x}, w={}, h={})", dpy, parent, w, h);
-    ctx.set_x(0, 0x2000001);
-    Ok(())
+pub fn thunk_XCreateSimpleWindow(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    thunk_XCreateWindow(ctx, mem)
 }
 
 pub fn thunk_XMapWindow(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let dpy = ctx.get_x(0);
     let win = ctx.get_x(1);
-    println!("[Maarch64 GPU Thunk] XMapWindow(dpy={:#x}, win={:#x}) -> Mapping Window on Host Screen", dpy, win);
-    open_host_x11_window();
+    println!("[Maarch64 GPU Passthrough] XMapWindow(dpy={:#x}, win={:#x})", dpy, win);
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XMapWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> i32;
+            type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+            if let (Ok(map_win), Ok(flush_dpy)) = (
+                x11_lib.get::<XMapWindowFn>(b"XMapWindow\0"),
+                x11_lib.get::<XFlushFn>(b"XFlush\0"),
+            ) {
+                if !state.host_x11_dpy.is_null() && state.host_window != 0 {
+                    map_win(state.host_x11_dpy, state.host_window);
+                    flush_dpy(state.host_x11_dpy);
+                }
+            }
+        }
+    }
     ctx.set_x(0, 0);
     Ok(())
 }
 
 pub fn thunk_XSetStandardProperties(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
-    let win = ctx.get_x(1);
-    println!("[Maarch64 GPU Thunk] XSetStandardProperties(dpy={:#x}, win={:#x})", dpy, win);
     ctx.set_x(0, 0);
     Ok(())
 }
 
 pub fn thunk_XFree(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let data = ctx.get_x(0);
-    println!("[Maarch64 GPU Thunk] XFree(data={:#x})", data);
     ctx.set_x(0, 0);
     Ok(())
 }
@@ -177,76 +251,250 @@ pub fn thunk_XPending(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<
 }
 
 // ----------------------------------------------------------------------------
-// EGL Thunk Handlers
+// EGL Passthrough Thunks
 // ----------------------------------------------------------------------------
 pub fn thunk_eglGetDisplay(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let display_id = ctx.get_x(0);
-    println!("[Maarch64 GPU Thunk] eglGetDisplay(display_id={:#x})", display_id);
-    open_host_x11_window();
-    ctx.set_x(0, 0x1000); // Mock EGLDisplay handle
+    println!("[Maarch64 GPU Passthrough] eglGetDisplay(native_display={:#x})", display_id);
+
+    let mut state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(egl_lib) = registry.get_library("libEGL.so.1") {
+        unsafe {
+            type EglGetDisplayFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void;
+            if let Ok(egl_get_dpy) = egl_lib.get::<EglGetDisplayFn>(b"eglGetDisplay\0") {
+                let native_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { display_id as *mut _ };
+                let host_egl_dpy = egl_get_dpy(native_dpy);
+                if !host_egl_dpy.is_null() {
+                    state.host_egl_dpy = host_egl_dpy;
+                    println!("[Maarch64 GPU Passthrough] Connected to Host EGLDisplay ({:p})", host_egl_dpy);
+                    ctx.set_x(0, host_egl_dpy as u64);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    ctx.set_x(0, 0x1000);
     Ok(())
 }
 
 pub fn thunk_eglInitialize(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
+    let dpy_ptr = ctx.get_x(0);
     let major_ptr = ctx.get_x(1);
     let minor_ptr = ctx.get_x(2);
-    println!("[Maarch64 GPU Thunk] eglInitialize(dpy={:#x}) -> Initializing EGL 1.5", dpy);
-    if major_ptr != 0 {
-        mem.write(major_ptr, &1i32.to_le_bytes()).map_err(|e| e.to_string())?;
+    println!("[Maarch64 GPU Passthrough] eglInitialize(dpy={:#x})", dpy_ptr);
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(egl_lib) = registry.get_library("libEGL.so.1") {
+        unsafe {
+            type EglInitializeFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut i32, *mut i32) -> i32;
+            if let Ok(egl_init) = egl_lib.get::<EglInitializeFn>(b"eglInitialize\0") {
+                let mut maj = 1i32;
+                let mut min = 5i32;
+                let host_dpy = if !state.host_egl_dpy.is_null() { state.host_egl_dpy } else { dpy_ptr as *mut _ };
+                let res = egl_init(host_dpy, &mut maj, &mut min);
+                if res != 0 {
+                    if major_ptr != 0 { let _ = mem.write(major_ptr, &maj.to_le_bytes()); }
+                    if minor_ptr != 0 { let _ = mem.write(minor_ptr, &min.to_le_bytes()); }
+                    ctx.set_x(0, 1);
+                    return Ok(());
+                }
+            }
+        }
     }
-    if minor_ptr != 0 {
-        mem.write(minor_ptr, &5i32.to_le_bytes()).map_err(|e| e.to_string())?; // EGL 1.5
-    }
-    ctx.set_x(0, 1); // EGL_TRUE
+
+    if major_ptr != 0 { let _ = mem.write(major_ptr, &1i32.to_le_bytes()); }
+    if minor_ptr != 0 { let _ = mem.write(minor_ptr, &5i32.to_le_bytes()); }
+    ctx.set_x(0, 1);
     Ok(())
 }
 
 pub fn thunk_eglBindAPI(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let api = ctx.get_x(0);
-    println!("[Maarch64 GPU Thunk] eglBindAPI(api={:#x}) -> EGL_OPENGL_ES_API", api);
-    ctx.set_x(0, 1); // EGL_TRUE
+    let api = ctx.get_x(0) as u32;
+    println!("[Maarch64 GPU Passthrough] eglBindAPI(api={:#x})", api);
+
+    let registry = get_gpu_registry();
+    if let Some(egl_lib) = registry.get_library("libEGL.so.1") {
+        unsafe {
+            type EglBindAPIFn = unsafe extern "C" fn(u32) -> i32;
+            if let Ok(egl_bind) = egl_lib.get::<EglBindAPIFn>(b"eglBindAPI\0") {
+                let res = egl_bind(api);
+                ctx.set_x(0, res as u64);
+                return Ok(());
+            }
+        }
+    }
+
+    ctx.set_x(0, 1);
     Ok(())
 }
 
 pub fn thunk_eglChooseConfig(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
+    let dpy_ptr = ctx.get_x(0);
     let configs_ptr = ctx.get_x(2);
     let num_config_ptr = ctx.get_x(4);
-    println!("[Maarch64 GPU Thunk] eglChooseConfig(dpy={:#x})", dpy);
+    println!("[Maarch64 GPU Passthrough] eglChooseConfig(dpy={:#x})", dpy_ptr);
 
-    if configs_ptr != 0 {
-        let _ = mem.write(configs_ptr, &0x5000u64.to_le_bytes()); // Mock EGLConfig
+    let mut state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(egl_lib) = registry.get_library("libEGL.so.1") {
+        unsafe {
+            type EglChooseConfigFn = unsafe extern "C" fn(*mut std::ffi::c_void, *const i32, *mut *mut std::ffi::c_void, i32, *mut i32) -> i32;
+            if let Ok(egl_choose) = egl_lib.get::<EglChooseConfigFn>(b"eglChooseConfig\0") {
+                let attribs: [i32; 11] = [
+                    0x3024, 8, // EGL_RED_SIZE
+                    0x3023, 8, // EGL_GREEN_SIZE
+                    0x3022, 8, // EGL_BLUE_SIZE
+                    0x3021, 8, // EGL_ALPHA_SIZE
+                    0x3040, 4, // EGL_RENDERABLE_TYPE = EGL_OPENGL_ES2_BIT
+                    0x3038     // EGL_NONE
+                ];
+                let mut host_cfg: *mut std::ffi::c_void = std::ptr::null_mut();
+                let mut num_cfg = 0i32;
+                let host_dpy = if !state.host_egl_dpy.is_null() { state.host_egl_dpy } else { dpy_ptr as *mut _ };
+                let res = egl_choose(host_dpy, attribs.as_ptr(), &mut host_cfg, 1, &mut num_cfg);
+                if res != 0 && !host_cfg.is_null() {
+                    state.host_egl_config = host_cfg;
+                    if configs_ptr != 0 { let _ = mem.write(configs_ptr, &(host_cfg as u64).to_le_bytes()); }
+                    if num_config_ptr != 0 { let _ = mem.write(num_config_ptr, &num_cfg.to_le_bytes()); }
+                    ctx.set_x(0, 1);
+                    return Ok(());
+                }
+            }
+        }
     }
-    if num_config_ptr != 0 {
-        let _ = mem.write(num_config_ptr, &1i32.to_le_bytes());
-    }
-    ctx.set_x(0, 1); // EGL_TRUE
+
+    if configs_ptr != 0 { let _ = mem.write(configs_ptr, &0x5000u64.to_le_bytes()); }
+    if num_config_ptr != 0 { let _ = mem.write(num_config_ptr, &1i32.to_le_bytes()); }
+    ctx.set_x(0, 1);
     Ok(())
 }
 
 pub fn thunk_eglCreateContext(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
-    let config = ctx.get_x(1);
-    println!("[Maarch64 GPU Thunk] eglCreateContext(dpy={:#x}, config={:#x})", dpy, config);
-    ctx.set_x(0, 0x6000); // Mock EGLContext
+    let dpy_ptr = ctx.get_x(0);
+    let cfg_ptr = ctx.get_x(1);
+    println!("[Maarch64 GPU Passthrough] eglCreateContext(dpy={:#x}, cfg={:#x})", dpy_ptr, cfg_ptr);
+
+    let mut state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(egl_lib) = registry.get_library("libEGL.so.1") {
+        unsafe {
+            type EglCreateContextFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, *mut std::ffi::c_void, *const i32) -> *mut std::ffi::c_void;
+            if let Ok(egl_create_ctx) = egl_lib.get::<EglCreateContextFn>(b"eglCreateContext\0") {
+                let attribs: [i32; 3] = [0x3098, 2, 0x3038]; // EGL_CONTEXT_CLIENT_VERSION = 2
+                let host_dpy = if !state.host_egl_dpy.is_null() { state.host_egl_dpy } else { dpy_ptr as *mut _ };
+                let host_cfg = if !state.host_egl_config.is_null() { state.host_egl_config } else { cfg_ptr as *mut _ };
+                let host_ctx = egl_create_ctx(host_dpy, host_cfg, std::ptr::null_mut(), attribs.as_ptr());
+                if !host_ctx.is_null() {
+                    state.host_egl_ctx = host_ctx;
+                    println!("[Maarch64 GPU Passthrough] SUCCESS: Created Host EGLContext ({:p})", host_ctx);
+                    ctx.set_x(0, host_ctx as u64);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    ctx.set_x(0, 0x6000);
     Ok(())
 }
 
 pub fn thunk_eglCreateWindowSurface(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
-    let win = ctx.get_x(2);
-    println!("[Maarch64 GPU Thunk] eglCreateWindowSurface(dpy={:#x}, win={:#x})", dpy, win);
-    ctx.set_x(0, 0x7000); // Mock EGLSurface
+    let dpy_ptr = ctx.get_x(0);
+    let cfg_ptr = ctx.get_x(1);
+    let win_handle = ctx.get_x(2);
+    println!("[Maarch64 GPU Passthrough] eglCreateWindowSurface(dpy={:#x}, win={:#x})", dpy_ptr, win_handle);
+
+    let mut state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(egl_lib) = registry.get_library("libEGL.so.1") {
+        unsafe {
+            type EglCreateWindowSurfaceFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, u64, *const i32) -> *mut std::ffi::c_void;
+            if let Ok(create_surface) = egl_lib.get::<EglCreateWindowSurfaceFn>(b"eglCreateWindowSurface\0") {
+                let host_dpy = if !state.host_egl_dpy.is_null() { state.host_egl_dpy } else { dpy_ptr as *mut _ };
+                let host_cfg = if !state.host_egl_config.is_null() { state.host_egl_config } else { cfg_ptr as *mut _ };
+                let target_win = if state.host_window != 0 { state.host_window } else { win_handle };
+                let surface = create_surface(host_dpy, host_cfg, target_win, std::ptr::null());
+                if !surface.is_null() {
+                    state.host_egl_surface = surface;
+                    println!("[Maarch64 GPU Passthrough] SUCCESS: Created Host EGLSurface ({:p})", surface);
+                    ctx.set_x(0, surface as u64);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    ctx.set_x(0, 0x7000);
     Ok(())
 }
 
 pub fn thunk_eglMakeCurrent(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
-    let draw = ctx.get_x(1);
-    let read = ctx.get_x(2);
-    let ctx_handle = ctx.get_x(3);
-    println!("[Maarch64 GPU Thunk] eglMakeCurrent(dpy={:#x}, draw={:#x}, read={:#x}, ctx={:#x})", dpy, draw, read, ctx_handle);
+    let dpy_ptr = ctx.get_x(0);
+    let draw_ptr = ctx.get_x(1);
+    let read_ptr = ctx.get_x(2);
+    let ctx_ptr = ctx.get_x(3);
+    println!("[Maarch64 GPU Passthrough] eglMakeCurrent(dpy={:#x}, ctx={:#x})", dpy_ptr, ctx_ptr);
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(egl_lib) = registry.get_library("libEGL.so.1") {
+        unsafe {
+            type EglMakeCurrentFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, *mut std::ffi::c_void, *mut std::ffi::c_void) -> i32;
+            if let Ok(make_current) = egl_lib.get::<EglMakeCurrentFn>(b"eglMakeCurrent\0") {
+                let host_dpy = if !state.host_egl_dpy.is_null() { state.host_egl_dpy } else { dpy_ptr as *mut _ };
+                let host_surf = if !state.host_egl_surface.is_null() { state.host_egl_surface } else { draw_ptr as *mut _ };
+                let host_ctx = if !state.host_egl_ctx.is_null() { state.host_egl_ctx } else { ctx_ptr as *mut _ };
+                let res = make_current(host_dpy, host_surf, host_surf, host_ctx);
+                if res != 0 {
+                    println!("[Maarch64 GPU Passthrough] Activated 3D Hardware Acceleration on Host GPU!");
+                    ctx.set_x(0, 1);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    ctx.set_x(0, 1);
+    Ok(())
+}
+
+pub fn thunk_eglGetConfigAttrib(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let cfg_ptr = ctx.get_x(1);
+    let attribute = ctx.get_x(2) as i32;
+    let value_ptr = ctx.get_x(3);
+    println!("[Maarch64 GPU Passthrough] eglGetConfigAttrib(attribute={:#x})", attribute);
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(egl_lib) = registry.get_library("libEGL.so.1") {
+        unsafe {
+            type EglGetConfigAttribFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, i32, *mut i32) -> i32;
+            if let Ok(get_cfg_attrib) = egl_lib.get::<EglGetConfigAttribFn>(b"eglGetConfigAttrib\0") {
+                let mut val = 0i32;
+                let host_dpy = if !state.host_egl_dpy.is_null() { state.host_egl_dpy } else { dpy_ptr as *mut _ };
+                let host_cfg = if !state.host_egl_config.is_null() { state.host_egl_config } else { cfg_ptr as *mut _ };
+                let res = get_cfg_attrib(host_dpy, host_cfg, attribute, &mut val);
+                if res != 0 {
+                    if value_ptr != 0 { let _ = mem.write(value_ptr, &val.to_le_bytes()).unwrap_or_default(); }
+                    ctx.set_x(0, 1);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    if value_ptr != 0 { let _ = mem.write(value_ptr, &0i32.to_le_bytes()).unwrap_or_default(); }
     ctx.set_x(0, 1); // EGL_TRUE
     Ok(())
 }
@@ -254,7 +502,7 @@ pub fn thunk_eglMakeCurrent(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> R
 pub fn thunk_eglQueryString(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let dpy = ctx.get_x(0);
     let name = ctx.get_x(1) as i32;
-    println!("[Maarch64 GPU Thunk] eglQueryString(dpy={:#x}, name={})", dpy, name);
+    println!("[Maarch64 GPU Passthrough] eglQueryString(dpy={:#x}, name={})", dpy, name);
 
     let str_val = match name {
         0x3053 => "Maarch64 EGL Thunk Engine\0", // EGL_VENDOR
@@ -269,20 +517,35 @@ pub fn thunk_eglQueryString(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Re
 }
 
 pub fn thunk_eglSwapBuffers(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
-    let surface = ctx.get_x(1);
-    println!("[Maarch64 GPU Thunk] eglSwapBuffers(dpy={:#x}, surface={:#x}) -> Swapping Framebuffers", dpy, surface);
+    let dpy_ptr = ctx.get_x(0);
+    let surface_ptr = ctx.get_x(1);
+    println!("[Maarch64 GPU Passthrough] eglSwapBuffers -> Rendering Frame to Screen");
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(egl_lib) = registry.get_library("libEGL.so.1") {
+        unsafe {
+            type EglSwapBuffersFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> i32;
+            if let Ok(swap_buf) = egl_lib.get::<EglSwapBuffersFn>(b"eglSwapBuffers\0") {
+                let host_dpy = if !state.host_egl_dpy.is_null() { state.host_egl_dpy } else { dpy_ptr as *mut _ };
+                let host_surf = if !state.host_egl_surface.is_null() { state.host_egl_surface } else { surface_ptr as *mut _ };
+                swap_buf(host_dpy, host_surf);
+            }
+        }
+    }
+
     flush_and_hold_native_window(5);
-    ctx.set_x(0, 1); // EGL_TRUE
+    ctx.set_x(0, 1);
     Ok(())
 }
 
 // ----------------------------------------------------------------------------
-// OpenGL / GLES Core Thunk Handlers
+// OpenGL / GLES Core Thunks
 // ----------------------------------------------------------------------------
 pub fn thunk_glGetString(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let name = ctx.get_x(0) as u32;
-    println!("[Maarch64 GPU Thunk] glGetString(name={:#x})", name);
+    println!("[Maarch64 GPU Passthrough] glGetString(name={:#x})", name);
 
     let str_val = match name {
         0x1F00 => "Maarch64 Project\0", // GL_VENDOR
@@ -302,14 +565,33 @@ pub fn thunk_glClearColor(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Res
     let g = f32::from_bits(ctx.get_x(1) as u32);
     let b = f32::from_bits(ctx.get_x(2) as u32);
     let a = f32::from_bits(ctx.get_x(3) as u32);
-    println!("[Maarch64 GPU Thunk] glClearColor(r={}, g={}, b={}, a={}) -> Setting Clear Color", r, g, b, a);
-    open_host_x11_window();
+    println!("[Maarch64 GPU Passthrough] glClearColor(r={}, g={}, b={}, a={})", r, g, b, a);
+
+    let registry = get_gpu_registry();
+    if let Some(gles_lib) = registry.get_library("libGLESv2.so.2") {
+        unsafe {
+            type GlClearColorFn = unsafe extern "C" fn(f32, f32, f32, f32);
+            if let Ok(clear_color) = gles_lib.get::<GlClearColorFn>(b"glClearColor\0") {
+                clear_color(r, g, b, a);
+            }
+        }
+    }
     Ok(())
 }
 
 pub fn thunk_glClear(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let mask = ctx.get_x(0) as u32;
-    println!("[Maarch64 GPU Thunk] glClear(mask={:#x}) -> Executing GPU Clear Buffer", mask);
+    println!("[Maarch64 GPU Passthrough] glClear(mask={:#x})", mask);
+
+    let registry = get_gpu_registry();
+    if let Some(gles_lib) = registry.get_library("libGLESv2.so.2") {
+        unsafe {
+            type GlClearFn = unsafe extern "C" fn(u32);
+            if let Ok(clear_fn) = gles_lib.get::<GlClearFn>(b"glClear\0") {
+                clear_fn(mask);
+            }
+        }
+    }
     flush_and_hold_native_window(5);
     Ok(())
 }
@@ -319,7 +601,17 @@ pub fn thunk_glViewport(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Resul
     let y = ctx.get_x(1) as i32;
     let w = ctx.get_x(2) as i32;
     let h = ctx.get_x(3) as i32;
-    println!("[Maarch64 GPU Thunk] glViewport(x={}, y={}, w={}, h={})", x, y, w, h);
+    println!("[Maarch64 GPU Passthrough] glViewport(x={}, y={}, w={}, h={})", x, y, w, h);
+
+    let registry = get_gpu_registry();
+    if let Some(gles_lib) = registry.get_library("libGLESv2.so.2") {
+        unsafe {
+            type GlViewportFn = unsafe extern "C" fn(i32, i32, i32, i32);
+            if let Ok(vp_fn) = gles_lib.get::<GlViewportFn>(b"glViewport\0") {
+                vp_fn(x, y, w, h);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -327,25 +619,34 @@ pub fn thunk_glDrawArrays(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Res
     let mode = ctx.get_x(0) as u32;
     let first = ctx.get_x(1) as i32;
     let count = ctx.get_x(2) as i32;
-    println!("[Maarch64 GPU Thunk] glDrawArrays(mode={:#x}, first={}, count={})", mode, first, count);
+    println!("[Maarch64 GPU Passthrough] glDrawArrays(mode={:#x}, first={}, count={})", mode, first, count);
+
+    let registry = get_gpu_registry();
+    if let Some(gles_lib) = registry.get_library("libGLESv2.so.2") {
+        unsafe {
+            type GlDrawArraysFn = unsafe extern "C" fn(u32, i32, i32);
+            if let Ok(draw_fn) = gles_lib.get::<GlDrawArraysFn>(b"glDrawArrays\0") {
+                draw_fn(mode, first, count);
+            }
+        }
+    }
     Ok(())
 }
 
 pub fn thunk_glFinish(_ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    println!("[Maarch64 GPU Thunk] glFinish()");
+    println!("[Maarch64 GPU Passthrough] glFinish()");
     Ok(())
 }
 
 pub fn thunk_glFlush(_ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    println!("[Maarch64 GPU Thunk] glFlush()");
+    println!("[Maarch64 GPU Passthrough] glFlush()");
     Ok(())
 }
 
 pub fn thunk_wl_display_connect(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let name_ptr = ctx.get_x(0);
-    println!("[Maarch64 GPU Thunk] wl_display_connect(name_ptr={:#x})", name_ptr);
-    open_host_x11_window();
-    ctx.set_x(0, 0x2000); // Mock wl_display handle
+    println!("[Maarch64 GPU Passthrough] wl_display_connect(name_ptr={:#x})", name_ptr);
+    ctx.set_x(0, 0x2000);
     Ok(())
 }
 
@@ -353,98 +654,38 @@ pub fn thunk_wl_egl_window_create(ctx: &mut CpuContext, _mem: &mut MemoryManager
     let surface = ctx.get_x(0);
     let width = ctx.get_x(1) as i32;
     let height = ctx.get_x(2) as i32;
-    println!("[Maarch64 GPU Thunk] wl_egl_window_create(surface={:#x}, w={}, h={})", surface, width, height);
-    open_host_x11_window();
-    ctx.set_x(0, 0x3000); // Mock wl_egl_window handle
+    println!("[Maarch64 GPU Passthrough] wl_egl_window_create(surface={:#x}, w={}, h={})", surface, width, height);
+    ctx.set_x(0, 0x3000);
     Ok(())
 }
 
-fn open_host_x11_window() -> bool {
-    let mut lock = NATIVE_WINDOW.lock().unwrap();
-    if lock.is_some() {
-        return true;
-    }
-
-    println!("\n[Maarch64 GPU Thunk] --------------------------------------------------");
-    println!("[Maarch64 GPU Thunk] Initializing Native Host X11 / Wayland Surface...");
-
+fn flush_and_hold_native_window(duration_secs: u64) {
+    let state = GPU_STATE.lock().unwrap();
     let registry = get_gpu_registry();
     if let Some(x11_lib) = registry.get_library("libX11.so.6") {
         unsafe {
-            type XOpenDisplayFn = unsafe extern "C" fn(*const std::os::raw::c_char) -> *mut std::ffi::c_void;
-            type XDefaultScreenFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
-            type XRootWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> u64;
-            type XBlackPixelFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> u64;
-            type XCreateSimpleWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, i32, i32, u32, u32, u32, u64, u64) -> u64;
-            type XSelectInputFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, i64) -> i32;
-            type XStoreNameFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const std::os::raw::c_char) -> i32;
-            type XMapWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> i32;
             type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+            type XPendingFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+            type XNextEventFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u8) -> i32;
 
-            if let (Ok(open_dpy), Ok(default_screen), Ok(root_win), Ok(black_pixel), Ok(create_win), Ok(select_input), Ok(store_name), Ok(map_win), Ok(flush_dpy)) = (
-                x11_lib.get::<XOpenDisplayFn>(b"XOpenDisplay\0"),
-                x11_lib.get::<XDefaultScreenFn>(b"XDefaultScreen\0"),
-                x11_lib.get::<XRootWindowFn>(b"XRootWindow\0"),
-                x11_lib.get::<XBlackPixelFn>(b"XBlackPixel\0"),
-                x11_lib.get::<XCreateSimpleWindowFn>(b"XCreateSimpleWindow\0"),
-                x11_lib.get::<XSelectInputFn>(b"XSelectInput\0"),
-                x11_lib.get::<XStoreNameFn>(b"XStoreName\0"),
-                x11_lib.get::<XMapWindowFn>(b"XMapWindow\0"),
+            if let (Ok(flush_dpy), Ok(pending_events), Ok(next_event)) = (
                 x11_lib.get::<XFlushFn>(b"XFlush\0"),
+                x11_lib.get::<XPendingFn>(b"XPending\0"),
+                x11_lib.get::<XNextEventFn>(b"XNextEvent\0"),
             ) {
-                let dpy = open_dpy(std::ptr::null());
-                if !dpy.is_null() {
-                    let scr = default_screen(dpy);
-                    let root = root_win(dpy, scr);
-                    let black = black_pixel(dpy, scr);
-                    // Sky blue background pixel (RGB: 0x3399FF)
-                    let bg_color = 0x003399FFu64;
-                    let win = create_win(dpy, root, 150, 150, 800, 600, 3, black, bg_color);
-                    
-                    select_input(dpy, win, (1 << 15) | (1 << 0) | (1 << 17));
-                    store_name(dpy, win, "Maarch64 AArch64 GPU Acceleration Demo (800x600)\0".as_ptr() as *const _);
-                    map_win(dpy, win);
-                    flush_dpy(dpy);
-
-                    *lock = Some(NativeWindowContext { display: dpy, window: win });
-                    println!("[Maarch64 GPU Thunk] SUCCESS: Created 800x600 Native Window (Window ID: {:#x})", win);
-                    println!("[Maarch64 GPU Thunk] Background color set to Sky Blue (0x3399FF).");
-                    println!("[Maarch64 GPU Thunk] --------------------------------------------------\n");
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-fn flush_and_hold_native_window(duration_secs: u64) {
-    let lock = NATIVE_WINDOW.lock().unwrap();
-    if let Some(ref native) = *lock {
-        let registry = get_gpu_registry();
-        if let Some(x11_lib) = registry.get_library("libX11.so.6") {
-            unsafe {
-                type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
-                type XPendingFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
-                type XNextEventFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u8) -> i32;
-
-                if let (Ok(flush_dpy), Ok(pending_events), Ok(next_event)) = (
-                    x11_lib.get::<XFlushFn>(b"XFlush\0"),
-                    x11_lib.get::<XPendingFn>(b"XPending\0"),
-                    x11_lib.get::<XNextEventFn>(b"XNextEvent\0"),
-                ) {
-                    flush_dpy(native.display);
+                if !state.host_x11_dpy.is_null() {
+                    flush_dpy(state.host_x11_dpy);
                     let mut event_buf = [0u8; 192];
                     
                     let steps = duration_secs * 10;
                     for i in 0..steps {
-                        while pending_events(native.display) > 0 {
-                            next_event(native.display, event_buf.as_mut_ptr());
+                        while pending_events(state.host_x11_dpy) > 0 {
+                            next_event(state.host_x11_dpy, event_buf.as_mut_ptr());
                         }
-                        flush_dpy(native.display);
+                        flush_dpy(state.host_x11_dpy);
                         thread::sleep(Duration::from_millis(100));
                         if i % 10 == 0 && i > 0 {
-                            println!("[Maarch64 GPU Thunk] Window active on desktop... ({}s remaining)", duration_secs - (i / 10));
+                            println!("[Maarch64 GPU Passthrough] Window active on desktop... ({}s remaining)", duration_secs - (i / 10));
                         }
                     }
                 }
@@ -454,7 +695,6 @@ fn flush_and_hold_native_window(duration_secs: u64) {
 }
 
 pub fn register_gpu_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
-    // Force initialization of host library resolution
     let _registry = get_gpu_registry();
 
     // X11 Thunks
@@ -473,6 +713,7 @@ pub fn register_gpu_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
     thunks.insert("eglInitialize".to_string(), thunk_eglInitialize);
     thunks.insert("eglBindAPI".to_string(), thunk_eglBindAPI);
     thunks.insert("eglChooseConfig".to_string(), thunk_eglChooseConfig);
+    thunks.insert("eglGetConfigAttrib".to_string(), thunk_eglGetConfigAttrib);
     thunks.insert("eglCreateContext".to_string(), thunk_eglCreateContext);
     thunks.insert("eglCreateWindowSurface".to_string(), thunk_eglCreateWindowSurface);
     thunks.insert("eglMakeCurrent".to_string(), thunk_eglMakeCurrent);
