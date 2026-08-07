@@ -10,6 +10,7 @@ pub struct ThunkManager {
 
 mod generated;
 pub mod gpu;
+pub mod audio;
 
 pub fn thunk_stub(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     ctx.set_x(0, 0);
@@ -50,6 +51,7 @@ impl ThunkManager {
     fn register_builtin_thunks(&mut self) {
         generated::register_generated_thunks(self);
         gpu::register_gpu_thunks(&mut self.wrapped_symbols);
+        audio::register_audio_thunks(&mut self.wrapped_symbols);
         self.register_thunk("__libc_start_main", thunk___libc_start_main);
         self.register_thunk_address(0x7f000fff, thunk_exit);
         self.register_thunk("malloc", thunk_malloc);
@@ -176,8 +178,12 @@ pub fn thunk___libc_start_main(ctx: &mut CpuContext, mem: &mut MemoryManager) ->
         ctx.tpidr_el0 = tls_addr;
     }
 
+    let envp = ctx.get_x(3);
+    let envp_ptr = if envp != 0 { envp } else { argv + (argc + 1) * 8 };
+
     ctx.set_x(0, argc);
     ctx.set_x(1, argv);
+    ctx.set_x(2, envp_ptr);
     ctx.set_x(30, 0x7f000fff);
     ctx.pc = main_ptr;
     Ok(())
@@ -411,7 +417,7 @@ pub fn thunk_printf(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(),
                 'p' => {
                     let val = ctx.get_x(arg_idx);
                     arg_idx += 1;
-                    out.push_str(&format!("0x{:x}", val));
+                    out.push_str(&format!("{:#x}", val));
                     i += 2;
                     continue;
                 }
@@ -849,8 +855,22 @@ pub fn thunk_exit(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), 
 pub fn thunk_strcmp(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let s1_ptr = ctx.get_x(0);
     let s2_ptr = ctx.get_x(1);
-    let s1 = mem.read_string(s1_ptr).map_err(|e| format!("strcmp s1: {}", e))?;
-    let s2 = mem.read_string(s2_ptr).map_err(|e| format!("strcmp s2: {}", e))?;
+
+    if s1_ptr == 0 && s2_ptr == 0 {
+        ctx.set_x(0, 0);
+        return Ok(());
+    }
+    if s1_ptr == 0 {
+        ctx.set_x(0, (-1i64) as u64);
+        return Ok(());
+    }
+    if s2_ptr == 0 {
+        ctx.set_x(0, 1);
+        return Ok(());
+    }
+
+    let s1 = mem.read_string(s1_ptr).unwrap_or_default();
+    let s2 = mem.read_string(s2_ptr).unwrap_or_default();
 
     let res = match s1.cmp(&s2) {
         std::cmp::Ordering::Less => -1i64,
