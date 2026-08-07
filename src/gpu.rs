@@ -90,7 +90,13 @@ pub fn thunk_XOpenDisplay(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Resu
         unsafe {
             type XOpenDisplayFn = unsafe extern "C" fn(*const std::os::raw::c_char) -> *mut std::ffi::c_void;
             if let Ok(open_dpy) = x11_lib.get::<XOpenDisplayFn>(b"XOpenDisplay\0") {
-                let c_ptr = if let Some(ref bytes) = name { bytes.as_ptr() as *const _ } else { std::ptr::null() };
+                let display_env = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
+                let display_cstring = std::ffi::CString::new(display_env).unwrap();
+                let c_ptr = if let Some(ref bytes) = name {
+                    bytes.as_ptr() as *const _
+                } else {
+                    display_cstring.as_ptr()
+                };
                 let dpy = open_dpy(c_ptr);
                 if !dpy.is_null() {
                     let mut state = GPU_STATE.lock().unwrap();
@@ -210,12 +216,13 @@ pub fn thunk_XCreateSimpleWindow(ctx: &mut CpuContext, mem: &mut MemoryManager) 
 }
 
 pub fn thunk_XMapWindow(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let dpy = ctx.get_x(0);
+    let dpy_ptr = ctx.get_x(0);
     let win = ctx.get_x(1);
-    println!("[Maarch64 GPU Passthrough] XMapWindow(dpy={:#x}, win={:#x})", dpy, win);
+    println!("[Maarch64 GPU Input] XMapWindow(win={:#x})", win);
 
     let state = GPU_STATE.lock().unwrap();
     let registry = get_gpu_registry();
+
     if let Some(x11_lib) = registry.get_library("libX11.so.6") {
         unsafe {
             type XMapWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> i32;
@@ -224,10 +231,251 @@ pub fn thunk_XMapWindow(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Resul
                 x11_lib.get::<XMapWindowFn>(b"XMapWindow\0"),
                 x11_lib.get::<XFlushFn>(b"XFlush\0"),
             ) {
-                if !state.host_x11_dpy.is_null() && state.host_window != 0 {
-                    map_win(state.host_x11_dpy, state.host_window);
-                    flush_dpy(state.host_x11_dpy);
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                let target_win = if state.host_window != 0 { state.host_window } else { win };
+                map_win(host_dpy, target_win);
+                flush_dpy(host_dpy);
+            }
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_XDefaultScreen(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XDefaultScreenFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+            if let Ok(default_scr) = x11_lib.get::<XDefaultScreenFn>(b"XDefaultScreen\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                let scr = default_scr(host_dpy);
+                ctx.set_x(0, scr as u64);
+                return Ok(());
+            }
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_XRootWindow(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let scr = ctx.get_x(1) as i32;
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XRootWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> u64;
+            if let Ok(root_win) = x11_lib.get::<XRootWindowFn>(b"XRootWindow\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                let win = root_win(host_dpy, scr);
+                ctx.set_x(0, win);
+                return Ok(());
+            }
+        }
+    }
+    ctx.set_x(0, 0x100);
+    Ok(())
+}
+
+pub fn thunk_XSelectInput(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let win = ctx.get_x(1);
+    let mask = ctx.get_x(2);
+    println!("[Maarch64 GPU Input] XSelectInput(win={:#x}, event_mask={:#x})", win, mask);
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XSelectInputFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, u64) -> i32;
+            if let Ok(select_input) = x11_lib.get::<XSelectInputFn>(b"XSelectInput\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                let target_win = if state.host_window != 0 { state.host_window } else { win };
+                select_input(host_dpy, target_win, mask);
+            }
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_XFlush(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+            if let Ok(flush_dpy) = x11_lib.get::<XFlushFn>(b"XFlush\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                flush_dpy(host_dpy);
+            }
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_XNextEvent(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let event_ptr = ctx.get_x(1);
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XNextEventFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u8) -> i32;
+            if let Ok(next_event) = x11_lib.get::<XNextEventFn>(b"XNextEvent\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                let mut host_event = [0u8; 192];
+                next_event(host_dpy, host_event.as_mut_ptr());
+                if event_ptr != 0 {
+                    let _ = mem.write(event_ptr, &host_event);
                 }
+                ctx.set_x(0, 0);
+                return Ok(());
+            }
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_XLookupString(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let event_ptr = ctx.get_x(0);
+    let buf_ptr = ctx.get_x(1);
+    let buf_bytes = ctx.get_x(2) as i32;
+    let keysym_ptr = ctx.get_x(3);
+    let status_ptr = ctx.get_x(4);
+
+    let registry = get_gpu_registry();
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XLookupStringFn = unsafe extern "C" fn(*mut u8, *mut u8, i32, *mut u64, *mut std::ffi::c_void) -> i32;
+            if let Ok(lookup) = x11_lib.get::<XLookupStringFn>(b"XLookupString\0") {
+                let ev_bytes = if event_ptr != 0 {
+                    mem.read(event_ptr, 192).unwrap_or_else(|_| vec![0u8; 192])
+                } else {
+                    vec![0u8; 192]
+                };
+                let mut out_buf = vec![0u8; (buf_bytes as usize).max(32)];
+                let mut keysym = 0u64;
+                let count = lookup(ev_bytes.as_ptr() as *mut u8, out_buf.as_mut_ptr(), buf_bytes, &mut keysym, status_ptr as *mut _);
+                if buf_ptr != 0 && count > 0 {
+                    let _ = mem.write(buf_ptr, &out_buf[..count as usize]);
+                }
+                if keysym_ptr != 0 {
+                    let _ = mem.write(keysym_ptr, &keysym.to_le_bytes());
+                }
+                ctx.set_x(0, count as u64);
+                return Ok(());
+            }
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_XCreateGC(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let win = ctx.get_x(1);
+    let mask = ctx.get_x(2);
+    let values_ptr = ctx.get_x(3);
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XCreateGCFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, u64, *const std::ffi::c_void) -> *mut std::ffi::c_void;
+            if let Ok(create_gc) = x11_lib.get::<XCreateGCFn>(b"XCreateGC\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                let target_win = if state.host_window != 0 { state.host_window } else { win };
+                let gc = create_gc(host_dpy, target_win, mask, values_ptr as *const _);
+                if !gc.is_null() {
+                    ctx.set_x(0, gc as u64);
+                    return Ok(());
+                }
+            }
+        }
+    }
+    ctx.set_x(0, 0x5000);
+    Ok(())
+}
+
+pub fn thunk_XSetForeground(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let gc_ptr = ctx.get_x(1);
+    let fg = ctx.get_x(2);
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XSetForegroundFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, u64) -> i32;
+            if let Ok(set_fg) = x11_lib.get::<XSetForegroundFn>(b"XSetForeground\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                set_fg(host_dpy, gc_ptr as *mut _, fg);
+            }
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_XFillRectangle(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let win = ctx.get_x(1);
+    let gc_ptr = ctx.get_x(2);
+    let x = ctx.get_x(3) as i32;
+    let y = ctx.get_x(4) as i32;
+    let w = ctx.get_x(5) as u32;
+    let h = ctx.get_x(6) as u32;
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XFillRectangleFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *mut std::ffi::c_void, i32, i32, u32, u32) -> i32;
+            if let Ok(fill_rect) = x11_lib.get::<XFillRectangleFn>(b"XFillRectangle\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                let target_win = if state.host_window != 0 { state.host_window } else { win };
+                fill_rect(host_dpy, target_win, gc_ptr as *mut _, x, y, w, h);
+            }
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_XStoreName(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let dpy_ptr = ctx.get_x(0);
+    let win = ctx.get_x(1);
+    let name_ptr = ctx.get_x(2);
+    let name = if name_ptr != 0 { mem.read_string(name_ptr).ok() } else { None };
+
+    let state = GPU_STATE.lock().unwrap();
+    let registry = get_gpu_registry();
+
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XStoreNameFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const std::os::raw::c_char) -> i32;
+            if let Ok(store_name) = x11_lib.get::<XStoreNameFn>(b"XStoreName\0") {
+                let host_dpy = if !state.host_x11_dpy.is_null() { state.host_x11_dpy } else { dpy_ptr as *mut _ };
+                let target_win = if state.host_window != 0 { state.host_window } else { win };
+                let c_name = name.as_ref().map(|bytes| bytes.as_ptr() as *const std::os::raw::c_char).unwrap_or(std::ptr::null());
+                store_name(host_dpy, target_win, c_name);
             }
         }
     }
@@ -707,6 +955,16 @@ pub fn register_gpu_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
     thunks.insert("XSetStandardProperties".to_string(), thunk_XSetStandardProperties);
     thunks.insert("XFree".to_string(), thunk_XFree);
     thunks.insert("XPending".to_string(), thunk_XPending);
+    thunks.insert("XDefaultScreen".to_string(), thunk_XDefaultScreen);
+    thunks.insert("XRootWindow".to_string(), thunk_XRootWindow);
+    thunks.insert("XSelectInput".to_string(), thunk_XSelectInput);
+    thunks.insert("XFlush".to_string(), thunk_XFlush);
+    thunks.insert("XNextEvent".to_string(), thunk_XNextEvent);
+    thunks.insert("XLookupString".to_string(), thunk_XLookupString);
+    thunks.insert("XCreateGC".to_string(), thunk_XCreateGC);
+    thunks.insert("XSetForeground".to_string(), thunk_XSetForeground);
+    thunks.insert("XFillRectangle".to_string(), thunk_XFillRectangle);
+    thunks.insert("XStoreName".to_string(), thunk_XStoreName);
 
     // EGL Thunks
     thunks.insert("eglGetDisplay".to_string(), thunk_eglGetDisplay);
