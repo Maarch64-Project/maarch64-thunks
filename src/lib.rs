@@ -9,6 +9,7 @@ pub struct ThunkManager {
 }
 
 mod generated;
+pub mod gpu;
 
 pub fn thunk_stub(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     ctx.set_x(0, 0);
@@ -48,6 +49,7 @@ impl ThunkManager {
 
     fn register_builtin_thunks(&mut self) {
         generated::register_generated_thunks(self);
+        gpu::register_gpu_thunks(&mut self.wrapped_symbols);
         self.register_thunk("__libc_start_main", thunk___libc_start_main);
         self.register_thunk_address(0x7f000fff, thunk_exit);
         self.register_thunk("malloc", thunk_malloc);
