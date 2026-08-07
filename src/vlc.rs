@@ -234,12 +234,7 @@ pub fn thunk_libvlc_playlist_play(ctx: &mut CpuContext, _mem: &mut MemoryManager
 }
 
 pub fn thunk_libvlc_wait(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let inst_ptr = ctx.get_x(0);
-    let target_ptr = if inst_ptr != 0 && inst_ptr != 0x6000 {
-        inst_ptr as *mut std::ffi::c_void
-    } else {
-        LAST_VLC_INSTANCE.load(Ordering::SeqCst)
-    };
+    let target_ptr = LAST_VLC_INSTANCE.load(Ordering::SeqCst);
 
     println!("[Maarch64 VLC Passthrough] libvlc_wait(instance={:p})", target_ptr);
     if !target_ptr.is_null() {
@@ -256,6 +251,7 @@ pub fn thunk_libvlc_wait(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Resu
             }
         }
     }
+    std::thread::sleep(std::time::Duration::from_millis(500));
     ctx.set_x(0, 0);
     Ok(())
 }
