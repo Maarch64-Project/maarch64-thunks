@@ -45,6 +45,13 @@ pub fn thunk_dlsym(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), 
     Ok(())
 }
 
+pub fn thunk_sigwait(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    println!("[Maarch64 Thunk] sigwait - keeping main loop active for host GUI window...");
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 impl ThunkManager {
     pub fn new() -> Self {
         let mut manager = Self {
@@ -82,6 +89,7 @@ impl ThunkManager {
         audio::register_audio_thunks(&mut self.wrapped_symbols);
         vlc::register_vlc_thunks(&mut self.wrapped_symbols);
         self.register_thunk("dlsym", thunk_dlsym);
+        self.register_thunk("sigwait", thunk_sigwait);
         self.register_thunk("__libc_start_main", thunk___libc_start_main);
         self.register_thunk_address(0x7f000fff, thunk_exit);
         self.register_thunk("malloc", thunk_malloc);

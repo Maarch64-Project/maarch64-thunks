@@ -219,10 +219,30 @@ pub fn thunk_libvlc_add_intf(ctx: &mut CpuContext, mem: &mut MemoryManager) -> R
 }
 
 pub fn thunk_libvlc_playlist_play(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    let inst_ptr = ctx.get_x(0);
     println!("[Maarch64 VLC Passthrough] libvlc_playlist_play()");
     ctx.set_x(0, 0);
     Ok(())
+}
+
+pub fn thunk_libvlc_wait(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    let inst_ptr = ctx.get_x(0);
+    println!("[Maarch64 VLC Passthrough] libvlc_wait(instance=0x{:x})", inst_ptr);
+    let registry = get_vlc_registry();
+    if let Some(vlc_lib) = registry.get_library("libvlc.so.5") {
+        unsafe {
+            type LibVlcWaitFn = unsafe extern "C" fn(*mut std::ffi::c_void);
+            if let Ok(vlc_wait) = vlc_lib.get::<LibVlcWaitFn>(b"libvlc_wait\0") {
+                if inst_ptr != 0 && inst_ptr != 0x6000 {
+                    vlc_wait(inst_ptr as *mut _);
+                    ctx.set_x(0, 0);
+                    return Ok(());
+                }
+            }
+        }
+    }
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 pub fn register_vlc_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
@@ -236,4 +256,5 @@ pub fn register_vlc_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
     thunks.insert("libvlc_set_app_id".to_string(), thunk_libvlc_set_app_id);
     thunks.insert("libvlc_add_intf".to_string(), thunk_libvlc_add_intf);
     thunks.insert("libvlc_playlist_play".to_string(), thunk_libvlc_playlist_play);
+    thunks.insert("libvlc_wait".to_string(), thunk_libvlc_wait);
 }
