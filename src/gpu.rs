@@ -2,6 +2,7 @@
 
 use maarch64_core::{cpu::CpuContext, memory::MemoryManager};
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 pub struct GpuThunkRegistry {
     loaded_libraries: HashMap<String, libloading::Library>,
@@ -32,14 +33,74 @@ impl GpuThunkRegistry {
         Self { loaded_libraries }
     }
 
-    pub fn has_library(&self, name: &str) -> bool {
-        self.loaded_libraries.contains_key(name)
+    pub fn get_library(&self, name: &str) -> Option<&libloading::Library> {
+        self.loaded_libraries.get(name)
     }
 }
 
 static GPU_REGISTRY: std::sync::OnceLock<GpuThunkRegistry> = std::sync::OnceLock::new();
 pub fn get_gpu_registry() -> &'static GpuThunkRegistry {
     GPU_REGISTRY.get_or_init(GpuThunkRegistry::new)
+}
+
+struct NativeWindowContext {
+    display: *mut std::ffi::c_void,
+    window: u64,
+}
+
+unsafe impl Send for NativeWindowContext {}
+unsafe impl Sync for NativeWindowContext {}
+
+static NATIVE_WINDOW: Mutex<Option<NativeWindowContext>> = Mutex::new(None);
+
+fn open_host_x11_window() -> bool {
+    let mut lock = NATIVE_WINDOW.lock().unwrap();
+    if lock.is_some() {
+        return true;
+    }
+
+    let registry = get_gpu_registry();
+    if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+        unsafe {
+            type XOpenDisplayFn = unsafe extern "C" fn(*const std::os::raw::c_char) -> *mut std::ffi::c_void;
+            type XDefaultScreenFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+            type XRootWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> u64;
+            type XBlackPixelFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> u64;
+            type XCreateSimpleWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, i32, i32, u32, u32, u32, u64, u64) -> u64;
+            type XStoreNameFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const std::os::raw::c_char) -> i32;
+            type XMapWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> i32;
+            type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+
+            if let (Ok(open_dpy), Ok(default_screen), Ok(root_win), Ok(black_pixel), Ok(create_win), Ok(store_name), Ok(map_win), Ok(flush_dpy)) = (
+                x11_lib.get::<XOpenDisplayFn>(b"XOpenDisplay\0"),
+                x11_lib.get::<XDefaultScreenFn>(b"XDefaultScreen\0"),
+                x11_lib.get::<XRootWindowFn>(b"XRootWindow\0"),
+                x11_lib.get::<XBlackPixelFn>(b"XBlackPixel\0"),
+                x11_lib.get::<XCreateSimpleWindowFn>(b"XCreateSimpleWindow\0"),
+                x11_lib.get::<XStoreNameFn>(b"XStoreName\0"),
+                x11_lib.get::<XMapWindowFn>(b"XMapWindow\0"),
+                x11_lib.get::<XFlushFn>(b"XFlush\0"),
+            ) {
+                let dpy = open_dpy(std::ptr::null());
+                if !dpy.is_null() {
+                    let scr = default_screen(dpy);
+                    let root = root_win(dpy, scr);
+                    let black = black_pixel(dpy, scr);
+                    // Sky blue background pixel 0x3399FF
+                    let bg_color = 0x003399FFu64;
+                    let win = create_win(dpy, root, 100, 100, 640, 480, 2, black, bg_color);
+                    store_name(dpy, win, "Maarch64 AArch64 GPU Window\0".as_ptr() as *const _);
+                    map_win(dpy, win);
+                    flush_dpy(dpy);
+
+                    *lock = Some(NativeWindowContext { display: dpy, window: win });
+                    println!("[Maarch64 GPU Thunk] Opened Native Host X11 Window (640x480)!");
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn write_gpu_string(mem: &mut MemoryManager, s: &str) -> u64 {
@@ -56,6 +117,7 @@ fn write_gpu_string(mem: &mut MemoryManager, s: &str) -> u64 {
 pub fn thunk_eglGetDisplay(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let display_id = ctx.get_x(0);
     tracing::debug!("[thunk] eglGetDisplay(display_id={:#x})", display_id);
+    open_host_x11_window();
     ctx.set_x(0, 0x1000); // Mock EGLDisplay handle
     Ok(())
 }
@@ -96,6 +158,19 @@ pub fn thunk_eglSwapBuffers(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> R
     let dpy = ctx.get_x(0);
     let surface = ctx.get_x(1);
     tracing::debug!("[thunk] eglSwapBuffers(dpy={:#x}, surface={:#x})", dpy, surface);
+    
+    let lock = NATIVE_WINDOW.lock().unwrap();
+    if let Some(ref native) = *lock {
+        let registry = get_gpu_registry();
+        if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+            unsafe {
+                type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+                if let Ok(flush_dpy) = x11_lib.get::<XFlushFn>(b"XFlush\0") {
+                    flush_dpy(native.display);
+                }
+            }
+        }
+    }
     ctx.set_x(0, 1); // EGL_TRUE
     Ok(())
 }
@@ -126,12 +201,26 @@ pub fn thunk_glClearColor(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Res
     let b = f32::from_bits(ctx.get_x(2) as u32);
     let a = f32::from_bits(ctx.get_x(3) as u32);
     tracing::debug!("[thunk] glClearColor(r={}, g={}, b={}, a={})", r, g, b, a);
+    open_host_x11_window();
     Ok(())
 }
 
 pub fn thunk_glClear(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let mask = ctx.get_x(0) as u32;
     tracing::debug!("[thunk] glClear(mask={:#x})", mask);
+    
+    let lock = NATIVE_WINDOW.lock().unwrap();
+    if let Some(ref native) = *lock {
+        let registry = get_gpu_registry();
+        if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+            unsafe {
+                type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+                if let Ok(flush_dpy) = x11_lib.get::<XFlushFn>(b"XFlush\0") {
+                    flush_dpy(native.display);
+                }
+            }
+        }
+    }
     Ok(())
 }
 
