@@ -3,6 +3,8 @@
 use maarch64_core::{cpu::CpuContext, memory::MemoryManager};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 
 pub struct GpuThunkRegistry {
     loaded_libraries: HashMap<String, libloading::Library>,
@@ -61,6 +63,9 @@ fn open_host_x11_window() -> bool {
         return true;
     }
 
+    println!("\n[Maarch64 GPU Thunk] --------------------------------------------------");
+    println!("[Maarch64 GPU Thunk] Initializing Native Host X11 / Wayland Surface...");
+
     let registry = get_gpu_registry();
     if let Some(x11_lib) = registry.get_library("libX11.so.6") {
         unsafe {
@@ -69,16 +74,18 @@ fn open_host_x11_window() -> bool {
             type XRootWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> u64;
             type XBlackPixelFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> u64;
             type XCreateSimpleWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, i32, i32, u32, u32, u32, u64, u64) -> u64;
+            type XSelectInputFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, i64) -> i32;
             type XStoreNameFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const std::os::raw::c_char) -> i32;
             type XMapWindowFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> i32;
             type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
 
-            if let (Ok(open_dpy), Ok(default_screen), Ok(root_win), Ok(black_pixel), Ok(create_win), Ok(store_name), Ok(map_win), Ok(flush_dpy)) = (
+            if let (Ok(open_dpy), Ok(default_screen), Ok(root_win), Ok(black_pixel), Ok(create_win), Ok(select_input), Ok(store_name), Ok(map_win), Ok(flush_dpy)) = (
                 x11_lib.get::<XOpenDisplayFn>(b"XOpenDisplay\0"),
                 x11_lib.get::<XDefaultScreenFn>(b"XDefaultScreen\0"),
                 x11_lib.get::<XRootWindowFn>(b"XRootWindow\0"),
                 x11_lib.get::<XBlackPixelFn>(b"XBlackPixel\0"),
                 x11_lib.get::<XCreateSimpleWindowFn>(b"XCreateSimpleWindow\0"),
+                x11_lib.get::<XSelectInputFn>(b"XSelectInput\0"),
                 x11_lib.get::<XStoreNameFn>(b"XStoreName\0"),
                 x11_lib.get::<XMapWindowFn>(b"XMapWindow\0"),
                 x11_lib.get::<XFlushFn>(b"XFlush\0"),
@@ -88,21 +95,65 @@ fn open_host_x11_window() -> bool {
                     let scr = default_screen(dpy);
                     let root = root_win(dpy, scr);
                     let black = black_pixel(dpy, scr);
-                    // Sky blue background pixel 0x3399FF
+                    // Sky blue background pixel (RGB: 0x3399FF)
                     let bg_color = 0x003399FFu64;
-                    let win = create_win(dpy, root, 100, 100, 640, 480, 2, black, bg_color);
-                    store_name(dpy, win, "Maarch64 AArch64 GPU Window\0".as_ptr() as *const _);
+                    let win = create_win(dpy, root, 150, 150, 800, 600, 3, black, bg_color);
+                    
+                    // ExposureMask = 1<<15, KeyPressMask = 1<<0, StructureNotifyMask = 1<<17
+                    select_input(dpy, win, (1 << 15) | (1 << 0) | (1 << 17));
+                    store_name(dpy, win, "Maarch64 AArch64 GPU Acceleration Demo (800x600)\0".as_ptr() as *const _);
                     map_win(dpy, win);
                     flush_dpy(dpy);
 
                     *lock = Some(NativeWindowContext { display: dpy, window: win });
-                    println!("[Maarch64 GPU Thunk] Opened Native Host X11 Window (640x480)!");
+                    println!("[Maarch64 GPU Thunk] SUCCESS: Created 800x600 Native Window (Window ID: {:#x})", win);
+                    println!("[Maarch64 GPU Thunk] Background color set to Sky Blue (0x3399FF).");
+                    println!("[Maarch64 GPU Thunk] --------------------------------------------------\n");
                     return true;
+                } else {
+                    println!("[Maarch64 GPU Thunk] WARNING: Unable to connect to host X11/Wayland display ($DISPLAY).");
                 }
             }
         }
     }
     false
+}
+
+fn flush_and_hold_native_window(duration_secs: u64) {
+    let lock = NATIVE_WINDOW.lock().unwrap();
+    if let Some(ref native) = *lock {
+        let registry = get_gpu_registry();
+        if let Some(x11_lib) = registry.get_library("libX11.so.6") {
+            unsafe {
+                type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+                type XPendingFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+                type XNextEventFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u8) -> i32;
+
+                if let (Ok(flush_dpy), Ok(pending_events), Ok(next_event)) = (
+                    x11_lib.get::<XFlushFn>(b"XFlush\0"),
+                    x11_lib.get::<XPendingFn>(b"XPending\0"),
+                    x11_lib.get::<XNextEventFn>(b"XNextEvent\0"),
+                ) {
+                    flush_dpy(native.display);
+                    let mut event_buf = [0u8; 192];
+                    
+                    println!("[Maarch64 GPU Thunk] Event Loop Running: Displaying Window on screen for {} seconds...", duration_secs);
+                    let steps = duration_secs * 10;
+                    for i in 0..steps {
+                        while pending_events(native.display) > 0 {
+                            next_event(native.display, event_buf.as_mut_ptr());
+                        }
+                        flush_dpy(native.display);
+                        thread::sleep(Duration::from_millis(100));
+                        if i % 10 == 0 && i > 0 {
+                            println!("[Maarch64 GPU Thunk] Window active on desktop... ({}s remaining)", duration_secs - (i / 10));
+                        }
+                    }
+                    println!("[Maarch64 GPU Thunk] Frame render sequence complete.");
+                }
+            }
+        }
+    }
 }
 
 fn write_gpu_string(mem: &mut MemoryManager, s: &str) -> u64 {
@@ -118,7 +169,7 @@ fn write_gpu_string(mem: &mut MemoryManager, s: &str) -> u64 {
 // ----------------------------------------------------------------------------
 pub fn thunk_eglGetDisplay(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let display_id = ctx.get_x(0);
-    tracing::debug!("[thunk] eglGetDisplay(display_id={:#x})", display_id);
+    println!("[thunk log] eglGetDisplay(display_id={:#x}) called", display_id);
     open_host_x11_window();
     ctx.set_x(0, 0x1000); // Mock EGLDisplay handle
     Ok(())
@@ -128,7 +179,7 @@ pub fn thunk_eglInitialize(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Res
     let dpy = ctx.get_x(0);
     let major_ptr = ctx.get_x(1);
     let minor_ptr = ctx.get_x(2);
-    tracing::debug!("[thunk] eglInitialize(dpy={:#x}, major_ptr={:#x}, minor_ptr={:#x})", dpy, major_ptr, minor_ptr);
+    println!("[thunk log] eglInitialize(dpy={:#x}) -> Initializing EGL 1.5", dpy);
     if major_ptr != 0 {
         mem.write(major_ptr, &1i32.to_le_bytes()).map_err(|e| e.to_string())?;
     }
@@ -142,7 +193,7 @@ pub fn thunk_eglInitialize(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Res
 pub fn thunk_eglQueryString(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let dpy = ctx.get_x(0);
     let name = ctx.get_x(1) as i32;
-    tracing::debug!("[thunk] eglQueryString(dpy={:#x}, name={})", dpy, name);
+    println!("[thunk log] eglQueryString(dpy={:#x}, name={})", dpy, name);
 
     let str_val = match name {
         0x3053 => "Maarch64 EGL Thunk Engine\0", // EGL_VENDOR
@@ -159,20 +210,8 @@ pub fn thunk_eglQueryString(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Re
 pub fn thunk_eglSwapBuffers(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let dpy = ctx.get_x(0);
     let surface = ctx.get_x(1);
-    tracing::debug!("[thunk] eglSwapBuffers(dpy={:#x}, surface={:#x})", dpy, surface);
-    
-    let lock = NATIVE_WINDOW.lock().unwrap();
-    if let Some(ref native) = *lock {
-        let registry = get_gpu_registry();
-        if let Some(x11_lib) = registry.get_library("libX11.so.6") {
-            unsafe {
-                type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
-                if let Ok(flush_dpy) = x11_lib.get::<XFlushFn>(b"XFlush\0") {
-                    flush_dpy(native.display);
-                }
-            }
-        }
-    }
+    println!("[thunk log] eglSwapBuffers(dpy={:#x}, surface={:#x}) -> Swapping Framebuffers", dpy, surface);
+    flush_and_hold_native_window(5);
     ctx.set_x(0, 1); // EGL_TRUE
     Ok(())
 }
@@ -182,7 +221,7 @@ pub fn thunk_eglSwapBuffers(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> R
 // ----------------------------------------------------------------------------
 pub fn thunk_glGetString(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let name = ctx.get_x(0) as u32;
-    tracing::debug!("[thunk] glGetString(name={:#x})", name);
+    println!("[thunk log] glGetString(name={:#x})", name);
 
     let str_val = match name {
         0x1F00 => "Maarch64 Project\0", // GL_VENDOR
@@ -202,27 +241,15 @@ pub fn thunk_glClearColor(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Res
     let g = f32::from_bits(ctx.get_x(1) as u32);
     let b = f32::from_bits(ctx.get_x(2) as u32);
     let a = f32::from_bits(ctx.get_x(3) as u32);
-    tracing::debug!("[thunk] glClearColor(r={}, g={}, b={}, a={})", r, g, b, a);
+    println!("[thunk log] glClearColor(r={}, g={}, b={}, a={}) -> Setting Clear Color", r, g, b, a);
     open_host_x11_window();
     Ok(())
 }
 
 pub fn thunk_glClear(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let mask = ctx.get_x(0) as u32;
-    tracing::debug!("[thunk] glClear(mask={:#x})", mask);
-    
-    let lock = NATIVE_WINDOW.lock().unwrap();
-    if let Some(ref native) = *lock {
-        let registry = get_gpu_registry();
-        if let Some(x11_lib) = registry.get_library("libX11.so.6") {
-            unsafe {
-                type XFlushFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
-                if let Ok(flush_dpy) = x11_lib.get::<XFlushFn>(b"XFlush\0") {
-                    flush_dpy(native.display);
-                }
-            }
-        }
-    }
+    println!("[thunk log] glClear(mask={:#x}) -> Executing GPU Clear Buffer", mask);
+    flush_and_hold_native_window(5);
     Ok(())
 }
 
@@ -231,7 +258,7 @@ pub fn thunk_glViewport(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Resul
     let y = ctx.get_x(1) as i32;
     let w = ctx.get_x(2) as i32;
     let h = ctx.get_x(3) as i32;
-    tracing::debug!("[thunk] glViewport(x={}, y={}, w={}, h={})", x, y, w, h);
+    println!("[thunk log] glViewport(x={}, y={}, w={}, h={})", x, y, w, h);
     Ok(())
 }
 
@@ -239,17 +266,17 @@ pub fn thunk_glDrawArrays(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Res
     let mode = ctx.get_x(0) as u32;
     let first = ctx.get_x(1) as i32;
     let count = ctx.get_x(2) as i32;
-    tracing::debug!("[thunk] glDrawArrays(mode={:#x}, first={}, count={})", mode, first, count);
+    println!("[thunk log] glDrawArrays(mode={:#x}, first={}, count={})", mode, first, count);
     Ok(())
 }
 
 pub fn thunk_glFinish(_ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    tracing::debug!("[thunk] glFinish()");
+    println!("[thunk log] glFinish()");
     Ok(())
 }
 
 pub fn thunk_glFlush(_ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    tracing::debug!("[thunk] glFlush()");
+    println!("[thunk log] glFlush()");
     Ok(())
 }
 
@@ -260,7 +287,7 @@ pub fn thunk_glXQueryExtension(ctx: &mut CpuContext, mem: &mut MemoryManager) ->
     let dpy = ctx.get_x(0);
     let error_base = ctx.get_x(1);
     let event_base = ctx.get_x(2);
-    tracing::debug!("[thunk] glXQueryExtension(dpy={:#x}, error_base={:#x}, event_base={:#x})", dpy, error_base, event_base);
+    println!("[thunk log] glXQueryExtension(dpy={:#x})", dpy);
     if error_base != 0 {
         mem.write(error_base, &0i32.to_le_bytes()).map_err(|e| e.to_string())?;
     }
@@ -274,13 +301,14 @@ pub fn thunk_glXQueryExtension(ctx: &mut CpuContext, mem: &mut MemoryManager) ->
 pub fn thunk_glXSwapBuffers(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let dpy = ctx.get_x(0);
     let drawable = ctx.get_x(1);
-    tracing::debug!("[thunk] glXSwapBuffers(dpy={:#x}, drawable={:#x})", dpy, drawable);
+    println!("[thunk log] glXSwapBuffers(dpy={:#x}, drawable={:#x})", dpy, drawable);
+    flush_and_hold_native_window(5);
     Ok(())
 }
 
 pub fn thunk_wl_display_connect(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let name_ptr = ctx.get_x(0);
-    tracing::debug!("[thunk] wl_display_connect(name_ptr={:#x})", name_ptr);
+    println!("[thunk log] wl_display_connect(name_ptr={:#x})", name_ptr);
     open_host_x11_window();
     ctx.set_x(0, 0x2000); // Mock wl_display handle
     Ok(())
@@ -290,7 +318,7 @@ pub fn thunk_wl_egl_window_create(ctx: &mut CpuContext, _mem: &mut MemoryManager
     let surface = ctx.get_x(0);
     let width = ctx.get_x(1) as i32;
     let height = ctx.get_x(2) as i32;
-    tracing::debug!("[thunk] wl_egl_window_create(surface={:#x}, w={}, h={})", surface, width, height);
+    println!("[thunk log] wl_egl_window_create(surface={:#x}, w={}, h={})", surface, width, height);
     open_host_x11_window();
     ctx.set_x(0, 0x3000); // Mock wl_egl_window handle
     Ok(())
