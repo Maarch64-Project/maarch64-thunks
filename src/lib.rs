@@ -77,7 +77,28 @@ impl ThunkManager {
     }
 
     pub fn get_thunk(&self, name: &str) -> Option<ThunkFn> {
-        self.wrapped_symbols.get(name).copied()
+        if name.contains("path_get_dirname") {
+            return Some(thunk_glibmm_path_get_dirname);
+        }
+        if name.contains("get_user_config_dir") {
+            return Some(thunk_glibmm_get_user_config_dir);
+        }
+        if name.contains("build_filename") {
+            return Some(thunk_glibmm_build_filename);
+        }
+        if name.contains("file_test") {
+            return Some(thunk_glibmm_file_test);
+        }
+        if name.contains("getenv") && name.contains("Glib") {
+            return Some(thunk_glibmm_getenv);
+        }
+        if name.contains("canonicalize_filename") {
+            return Some(thunk_glibmm_canonicalize_filename);
+        }
+        if let Some(h) = self.wrapped_symbols.get(name).copied() {
+            return Some(h);
+        }
+        None
     }
 
     pub fn get_thunk_by_address(&self, vaddr: u64) -> Option<ThunkFn> {
@@ -175,6 +196,11 @@ impl ThunkManager {
         self.register_thunk("getopt", thunk_getopt);
         self.register_thunk("getopt_long", thunk_getopt_long);
         self.register_thunk("getopt_long_only", thunk_getopt_long);
+        self.register_thunk("g_build_filename", thunk_g_build_filename);
+        self.register_thunk("g_path_get_dirname", thunk_g_path_get_dirname);
+        self.register_thunk("g_get_user_config_dir", thunk_g_get_user_config_dir);
+        self.register_thunk("g_get_user_data_dir", thunk_g_get_user_data_dir);
+        self.register_thunk("g_file_test", thunk_g_file_test);
         self.register_thunk("__errno_location", thunk___errno_location);
         self.register_thunk("write", thunk_write);
         self.register_thunk("writev", thunk_writev);
@@ -1735,5 +1761,214 @@ pub fn thunk_vsnprintf(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<
     }
 
     ctx.set_x(0, out.len() as u64);
+    Ok(())
+}
+
+pub fn thunk_g_build_filename(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let mut parts = Vec::new();
+    for i in 0..8 {
+        let arg_ptr = ctx.get_x(i);
+        if arg_ptr == 0 {
+            break;
+        }
+        if let Ok(bytes) = mem.read_string(arg_ptr) {
+            parts.push(String::from_utf8_lossy(&bytes).to_string());
+        }
+    }
+    let joined = parts.join("/");
+    let bytes = joined.as_bytes();
+    let alloc_addr = mem.map_anonymous(0, ((bytes.len() + 1 + 4095) / 4096) * 4096).unwrap_or(0);
+    if alloc_addr != 0 {
+        let _ = mem.write(alloc_addr, bytes);
+        let _ = mem.write(alloc_addr + bytes.len() as u64, &[0u8]);
+        ctx.set_x(0, alloc_addr);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_g_path_get_dirname(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let path_ptr = ctx.get_x(0);
+    let path_str = if path_ptr != 0 {
+        String::from_utf8_lossy(&mem.read_string(path_ptr).unwrap_or_default()).to_string()
+    } else {
+        ".".to_string()
+    };
+    let parent = std::path::Path::new(&path_str).parent().unwrap_or(std::path::Path::new(".")).to_string_lossy();
+    let bytes = parent.as_bytes();
+    let alloc_addr = mem.map_anonymous(0, 4096).unwrap_or(0);
+    if alloc_addr != 0 {
+        let _ = mem.write(alloc_addr, bytes);
+        let _ = mem.write(alloc_addr + bytes.len() as u64, &[0u8]);
+        ctx.set_x(0, alloc_addr);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_g_get_user_config_dir(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let config_dir = format!("{}/.config", home);
+    let bytes = config_dir.as_bytes();
+    let alloc_addr = mem.map_anonymous(0, 4096).unwrap_or(0);
+    if alloc_addr != 0 {
+        let _ = mem.write(alloc_addr, bytes);
+        let _ = mem.write(alloc_addr + bytes.len() as u64, &[0u8]);
+        ctx.set_x(0, alloc_addr);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_g_get_user_data_dir(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let data_dir = format!("{}/.local/share", home);
+    let bytes = data_dir.as_bytes();
+    let alloc_addr = mem.map_anonymous(0, 4096).unwrap_or(0);
+    if alloc_addr != 0 {
+        let _ = mem.write(alloc_addr, bytes);
+        let _ = mem.write(alloc_addr + bytes.len() as u64, &[0u8]);
+        ctx.set_x(0, alloc_addr);
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+pub fn thunk_g_file_test(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let path_ptr = ctx.get_x(0);
+    if path_ptr != 0 {
+        let path_str = String::from_utf8_lossy(&mem.read_string(path_ptr).unwrap_or_default()).to_string();
+        let exists = std::path::Path::new(&path_str).exists();
+        ctx.set_x(0, if exists { 1 } else { 0 });
+    } else {
+        ctx.set_x(0, 0);
+    }
+    Ok(())
+}
+
+fn write_cpp_string(mem: &mut MemoryManager, ret_ptr: u64, val: &str) -> Result<(), String> {
+    if ret_ptr == 0 {
+        return Ok(());
+    }
+    let page_base = ret_ptr & !0xfff;
+    let _ = mem.map_anonymous(page_base, 4096);
+    let bytes = val.as_bytes();
+    let len = bytes.len();
+    let sso_buf_addr = ret_ptr + 16;
+    if len < 16 {
+        let _ = mem.write(ret_ptr, &sso_buf_addr.to_le_bytes());
+        let _ = mem.write(ret_ptr + 8, &(len as u64).to_le_bytes());
+        let mut local_buf = [0u8; 16];
+        local_buf[..len].copy_from_slice(bytes);
+        let _ = mem.write(sso_buf_addr, &local_buf);
+    } else {
+        let heap_addr = mem.map_anonymous(0, ((len + 1 + 4095) / 4096) * 4096).unwrap_or(0);
+        let _ = mem.write(heap_addr, bytes);
+        let _ = mem.write(heap_addr + len as u64, &[0u8]);
+        let _ = mem.write(ret_ptr, &heap_addr.to_le_bytes());
+        let _ = mem.write(ret_ptr + 8, &(len as u64).to_le_bytes());
+    }
+    Ok(())
+}
+
+pub fn thunk_glibmm_path_get_dirname(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let ret_ptr = ctx.get_x(0);
+    let path_arg_ptr = ctx.get_x(1);
+    tracing::info!("[thunk_glibmm_path_get_dirname] ret_ptr={:#x}, path_arg_ptr={:#x}", ret_ptr, path_arg_ptr);
+    let path_str = if path_arg_ptr != 0 {
+        if let Ok(p_str_ptr) = mem.read_u64(path_arg_ptr) {
+            String::from_utf8_lossy(&mem.read_string(p_str_ptr).unwrap_or_default()).to_string()
+        } else {
+            ".".to_string()
+        }
+    } else {
+        ".".to_string()
+    };
+    let parent = std::path::Path::new(&path_str).parent().unwrap_or(std::path::Path::new(".")).to_string_lossy();
+    tracing::info!("[thunk_glibmm_path_get_dirname] path_str={:?} -> parent={:?}", path_str, parent);
+    write_cpp_string(mem, ret_ptr, &parent)?;
+    ctx.set_x(0, ret_ptr);
+    Ok(())
+}
+
+pub fn thunk_glibmm_get_user_config_dir(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let ret_ptr = ctx.get_x(0);
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let config_dir = format!("{}/.config", home);
+    write_cpp_string(mem, ret_ptr, &config_dir)?;
+    ctx.set_x(0, ret_ptr);
+    Ok(())
+}
+
+pub fn thunk_glibmm_build_filename(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let ret_ptr = ctx.get_x(0);
+    let p1_ptr = ctx.get_x(1);
+    let p2_ptr = ctx.get_x(2);
+    let mut parts = Vec::new();
+    for p_ptr in [p1_ptr, p2_ptr] {
+        if p_ptr != 0 {
+            if let Ok(str_ptr) = mem.read_u64(p_ptr) {
+                if let Ok(bytes) = mem.read_string(str_ptr) {
+                    parts.push(String::from_utf8_lossy(&bytes).to_string());
+                }
+            }
+        }
+    }
+    let joined = parts.join("/");
+    write_cpp_string(mem, ret_ptr, &joined)?;
+    ctx.set_x(0, ret_ptr);
+    Ok(())
+}
+
+pub fn thunk_glibmm_getenv(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let ret_ptr = ctx.get_x(0);
+    let var_name_ptr = ctx.get_x(1);
+    let name = if var_name_ptr != 0 {
+        if let Ok(str_ptr) = mem.read_u64(var_name_ptr) {
+            String::from_utf8_lossy(&mem.read_string(str_ptr).unwrap_or_default()).to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let val = std::env::var(&name).unwrap_or_default();
+    write_cpp_string(mem, ret_ptr, &val)?;
+    ctx.set_x(0, ret_ptr);
+    Ok(())
+}
+
+pub fn thunk_glibmm_file_test(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let path_arg_ptr = ctx.get_x(0);
+    if path_arg_ptr != 0 {
+        if let Ok(str_ptr) = mem.read_u64(path_arg_ptr) {
+            let path_str = String::from_utf8_lossy(&mem.read_string(str_ptr).unwrap_or_default()).to_string();
+            let exists = std::path::Path::new(&path_str).exists();
+            ctx.set_x(0, if exists { 1 } else { 0 });
+            return Ok(());
+        }
+    }
+    ctx.set_x(0, 0);
+    Ok(())
+}
+
+pub fn thunk_glibmm_canonicalize_filename(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    let ret_ptr = ctx.get_x(0);
+    let path_arg_ptr = ctx.get_x(1);
+    let path_str = if path_arg_ptr != 0 {
+        if let Ok(str_ptr) = mem.read_u64(path_arg_ptr) {
+            String::from_utf8_lossy(&mem.read_string(str_ptr).unwrap_or_default()).to_string()
+        } else {
+            "/".to_string()
+        }
+    } else {
+        "/".to_string()
+    };
+    write_cpp_string(mem, ret_ptr, &path_str)?;
+    ctx.set_x(0, ret_ptr);
     Ok(())
 }
