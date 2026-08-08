@@ -20,10 +20,10 @@ impl VlcRegistry {
 
         for (name, alt_name) in libs_to_try {
             if let Ok(lib) = unsafe { libloading::Library::new(name) } {
-                println!("[Maarch64 VLC Passthrough] Successfully loaded host VLC library: {}", name);
+                tracing::info!("[Maarch64 VLC Passthrough] Successfully loaded host VLC library: {}", name);
                 loaded_libraries.insert(name.to_string(), lib);
             } else if let Ok(lib) = unsafe { libloading::Library::new(alt_name) } {
-                println!("[Maarch64 VLC Passthrough] Successfully loaded host VLC library: {}", alt_name);
+                tracing::info!("[Maarch64 VLC Passthrough] Successfully loaded host VLC library: {}", alt_name);
                 loaded_libraries.insert(name.to_string(), lib);
             }
         }
@@ -49,7 +49,7 @@ pub fn thunk_libvlc_new(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result
     let argc = ctx.get_x(0) as i32;
     let argv_ptr = ctx.get_x(1);
 
-    println!("[Maarch64 VLC Passthrough] libvlc_new(argc={})", argc);
+    tracing::info!("[Maarch64 VLC Passthrough] libvlc_new(argc={})", argc);
 
     let registry = get_vlc_registry();
     if let Some(vlc_lib) = registry.get_library("libvlc.so.5") {
@@ -75,7 +75,7 @@ pub fn thunk_libvlc_new(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result
                 let handle = vlc_new(c_ptrs.len() as i32, c_ptrs.as_ptr());
                 if !handle.is_null() {
                     LAST_VLC_INSTANCE.store(handle, Ordering::SeqCst);
-                    println!("[Maarch64 VLC Passthrough] SUCCESS: Created Host libvlc Instance ({:p})", handle);
+                    tracing::info!("[Maarch64 VLC Passthrough] SUCCESS: Created Host libvlc Instance ({:p})", handle);
                     ctx.set_x(0, handle as u64);
                     return Ok(());
                 }
@@ -206,7 +206,7 @@ pub fn thunk_libvlc_add_intf(ctx: &mut CpuContext, mem: &mut MemoryManager) -> R
     let name_ptr = ctx.get_x(1);
     let name = if name_ptr != 0 { mem.read_string(name_ptr).ok() } else { None };
 
-    println!("[Maarch64 VLC Passthrough] libvlc_add_intf(name={:?})", name);
+    tracing::info!("[Maarch64 VLC Passthrough] libvlc_add_intf(name={:?})", name);
 
     let registry = get_vlc_registry();
     if let Some(vlc_lib) = registry.get_library("libvlc.so.5") {
@@ -228,7 +228,7 @@ pub fn thunk_libvlc_add_intf(ctx: &mut CpuContext, mem: &mut MemoryManager) -> R
 }
 
 pub fn thunk_libvlc_playlist_play(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    println!("[Maarch64 VLC Passthrough] libvlc_playlist_play()");
+    tracing::info!("[Maarch64 VLC Passthrough] libvlc_playlist_play()");
     ctx.set_x(0, 0);
     Ok(())
 }
@@ -236,7 +236,7 @@ pub fn thunk_libvlc_playlist_play(ctx: &mut CpuContext, _mem: &mut MemoryManager
 pub fn thunk_libvlc_wait(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     let target_ptr = LAST_VLC_INSTANCE.load(Ordering::SeqCst);
 
-    println!("[Maarch64 VLC Passthrough] libvlc_wait(instance={:p})", target_ptr);
+    tracing::info!("[Maarch64 VLC Passthrough] libvlc_wait(instance={:p})", target_ptr);
     if !target_ptr.is_null() {
         let registry = get_vlc_registry();
         if let Some(vlc_lib) = registry.get_library("libvlc.so.5") {
@@ -244,7 +244,7 @@ pub fn thunk_libvlc_wait(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Resu
                 type LibVlcWaitFn = unsafe extern "C" fn(*mut std::ffi::c_void);
                 if let Ok(vlc_wait) = vlc_lib.get::<LibVlcWaitFn>(b"libvlc_wait\0") {
                     vlc_wait(target_ptr);
-                    println!("[Maarch64 VLC Passthrough] Host VLC window closed cleanly.");
+                    tracing::info!("[Maarch64 VLC Passthrough] Host VLC window closed cleanly.");
                     ctx.set_x(0, 0);
                     return Ok(());
                 }
@@ -257,7 +257,6 @@ pub fn thunk_libvlc_wait(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Resu
 }
 
 pub fn register_vlc_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
-    let _registry = get_vlc_registry();
 
     thunks.insert("libvlc_new".to_string(), thunk_libvlc_new);
     thunks.insert("libvlc_release".to_string(), thunk_libvlc_release);

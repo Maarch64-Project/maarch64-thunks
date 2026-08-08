@@ -1875,12 +1875,17 @@ fn write_cpp_string(mem: &mut MemoryManager, ret_ptr: u64, val: &str) -> Result<
     Ok(())
 }
 
+fn read_u64_helper(mem: &MemoryManager, addr: u64) -> Result<u64, String> {
+    let bytes = mem.read(addr, 8).map_err(|e| e.to_string())?;
+    Ok(u64::from_le_bytes(bytes.try_into().unwrap_or([0; 8])))
+}
+
 pub fn thunk_glibmm_path_get_dirname(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let ret_ptr = ctx.get_x(0);
     let path_arg_ptr = ctx.get_x(1);
     tracing::info!("[thunk_glibmm_path_get_dirname] ret_ptr={:#x}, path_arg_ptr={:#x}", ret_ptr, path_arg_ptr);
     let path_str = if path_arg_ptr != 0 {
-        if let Ok(p_str_ptr) = mem.read_u64(path_arg_ptr) {
+        if let Ok(p_str_ptr) = read_u64_helper(mem, path_arg_ptr) {
             String::from_utf8_lossy(&mem.read_string(p_str_ptr).unwrap_or_default()).to_string()
         } else {
             ".".to_string()
@@ -1911,7 +1916,7 @@ pub fn thunk_glibmm_build_filename(ctx: &mut CpuContext, mem: &mut MemoryManager
     let mut parts = Vec::new();
     for p_ptr in [p1_ptr, p2_ptr] {
         if p_ptr != 0 {
-            if let Ok(str_ptr) = mem.read_u64(p_ptr) {
+            if let Ok(str_ptr) = read_u64_helper(mem, p_ptr) {
                 if let Ok(bytes) = mem.read_string(str_ptr) {
                     parts.push(String::from_utf8_lossy(&bytes).to_string());
                 }
@@ -1928,7 +1933,7 @@ pub fn thunk_glibmm_getenv(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Res
     let ret_ptr = ctx.get_x(0);
     let var_name_ptr = ctx.get_x(1);
     let name = if var_name_ptr != 0 {
-        if let Ok(str_ptr) = mem.read_u64(var_name_ptr) {
+        if let Ok(str_ptr) = read_u64_helper(mem, var_name_ptr) {
             String::from_utf8_lossy(&mem.read_string(str_ptr).unwrap_or_default()).to_string()
         } else {
             String::new()
@@ -1945,7 +1950,7 @@ pub fn thunk_glibmm_getenv(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Res
 pub fn thunk_glibmm_file_test(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let path_arg_ptr = ctx.get_x(0);
     if path_arg_ptr != 0 {
-        if let Ok(str_ptr) = mem.read_u64(path_arg_ptr) {
+        if let Ok(str_ptr) = read_u64_helper(mem, path_arg_ptr) {
             let path_str = String::from_utf8_lossy(&mem.read_string(str_ptr).unwrap_or_default()).to_string();
             let exists = std::path::Path::new(&path_str).exists();
             ctx.set_x(0, if exists { 1 } else { 0 });
@@ -1960,7 +1965,7 @@ pub fn thunk_glibmm_canonicalize_filename(ctx: &mut CpuContext, mem: &mut Memory
     let ret_ptr = ctx.get_x(0);
     let path_arg_ptr = ctx.get_x(1);
     let path_str = if path_arg_ptr != 0 {
-        if let Ok(str_ptr) = mem.read_u64(path_arg_ptr) {
+        if let Ok(str_ptr) = read_u64_helper(mem, path_arg_ptr) {
             String::from_utf8_lossy(&mem.read_string(str_ptr).unwrap_or_default()).to_string()
         } else {
             "/".to_string()

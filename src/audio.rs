@@ -18,10 +18,10 @@ impl AudioRegistry {
 
         for (name, alt_name) in libs_to_try {
             if let Ok(lib) = unsafe { libloading::Library::new(name) } {
-                println!("[Maarch64 Audio Passthrough] Successfully loaded host audio library: {}", name);
+                tracing::info!("[Maarch64 Audio Passthrough] Successfully loaded host audio library: {}", name);
                 loaded_libraries.insert(name.to_string(), lib);
             } else if let Ok(lib) = unsafe { libloading::Library::new(alt_name) } {
-                println!("[Maarch64 Audio Passthrough] Successfully loaded host audio library: {}", alt_name);
+                tracing::info!("[Maarch64 Audio Passthrough] Successfully loaded host audio library: {}", alt_name);
                 loaded_libraries.insert(name.to_string(), lib);
             }
         }
@@ -55,7 +55,7 @@ pub fn thunk_pa_simple_new(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Res
     let name = if name_ptr != 0 { mem.read_string(name_ptr).ok() } else { None };
     let stream_name = if stream_name_ptr != 0 { mem.read_string(stream_name_ptr).ok() } else { None };
 
-    println!("[Maarch64 Audio Passthrough] pa_simple_new(app_name={:?}, stream_name={:?})", name, stream_name);
+    tracing::info!("[Maarch64 Audio Passthrough] pa_simple_new(app_name={:?}, stream_name={:?})", name, stream_name);
 
     let registry = get_audio_registry();
     if let Some(pulse_lib) = registry.get_library("libpulse-simple.so.0") {
@@ -95,7 +95,7 @@ pub fn thunk_pa_simple_new(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Res
                 );
 
                 if !pa_handle.is_null() {
-                    println!("[Maarch64 Audio Passthrough] SUCCESS: Connected to Host PulseAudio Stream ({:p})", pa_handle);
+                    tracing::info!("[Maarch64 Audio Passthrough] SUCCESS: Connected to Host PulseAudio Stream ({:p})", pa_handle);
                     ctx.set_x(0, pa_handle as u64);
                     return Ok(());
                 }
@@ -164,7 +164,7 @@ pub fn thunk_pa_simple_free(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> R
     if let Some(pulse_lib) = registry.get_library("libpulse-simple.so.0") {
         unsafe {
             type PaSimpleFreeFn = unsafe extern "C" fn(*mut std::ffi::c_void);
-            if let Ok(pa_free) = pulse_lib.get::<PaSimpleFreeFn>(b"pa_simple_free\0") {
+            if let Ok(pa_free) = pulse_lib.get::<PaSimpleFreeFn>(b"pa_free\0") {
                 if handle_ptr != 0 && handle_ptr != 0x4000 {
                     pa_free(handle_ptr as *mut _);
                 }
@@ -185,7 +185,7 @@ pub fn thunk_snd_pcm_open(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Resu
     let mode = ctx.get_x(3) as i32;
 
     let name = if name_ptr != 0 { mem.read_string(name_ptr).ok() } else { None };
-    println!("[Maarch64 Audio Passthrough] snd_pcm_open(dev={:?}, stream={}, mode={})", name, stream, mode);
+    tracing::info!("[Maarch64 Audio Passthrough] snd_pcm_open(dev={:?}, stream={}, mode={})", name, stream, mode);
 
     let registry = get_audio_registry();
     if let Some(alsa_lib) = registry.get_library("libasound.so.2") {
@@ -203,7 +203,7 @@ pub fn thunk_snd_pcm_open(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Resu
                     if pcm_ret_ptr != 0 {
                         let _ = mem.write(pcm_ret_ptr, &(host_pcm as u64).to_le_bytes());
                     }
-                    println!("[Maarch64 Audio Passthrough] SUCCESS: Opened Host ALSA PCM Handle ({:p})", host_pcm);
+                    tracing::info!("[Maarch64 Audio Passthrough] SUCCESS: Opened Host ALSA PCM Handle ({:p})", host_pcm);
                     ctx.set_x(0, 0);
                     return Ok(());
                 }
@@ -225,7 +225,7 @@ pub fn thunk_snd_pcm_set_params(ctx: &mut CpuContext, _mem: &mut MemoryManager) 
     let soft_resample = ctx.get_x(5) as i32;
     let latency = ctx.get_x(6) as u32;
 
-    println!("[Maarch64 Audio Passthrough] snd_pcm_set_params(format={}, channels={}, rate={}Hz)", format, channels, rate);
+    tracing::info!("[Maarch64 Audio Passthrough] snd_pcm_set_params(format={}, channels={}, rate={}Hz)", format, channels, rate);
 
     let registry = get_audio_registry();
     if let Some(alsa_lib) = registry.get_library("libasound.so.2") {
@@ -328,7 +328,6 @@ pub fn thunk_snd_pcm_close(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Re
 }
 
 pub fn register_audio_thunks(thunks: &mut HashMap<String, crate::ThunkFn>) {
-    let _registry = get_audio_registry();
 
     // PulseAudio Thunks
     thunks.insert("pa_simple_new".to_string(), thunk_pa_simple_new);
