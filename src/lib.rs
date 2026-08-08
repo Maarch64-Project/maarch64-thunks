@@ -71,6 +71,7 @@ impl ThunkManager {
     }
 
     pub fn resolve_dynamic_symbol(&mut self, name: &str, vaddr: u64) {
+        eprintln!("[Maarch64 Thunk] Dynamic symbol resolve: {} -> {:#x}", name, vaddr);
         let handler = self.get_thunk(name).unwrap_or(thunk_stub);
         self.register_thunk_address(vaddr, handler);
     }
@@ -80,7 +81,12 @@ impl ThunkManager {
     }
 
     pub fn get_thunk_by_address(&self, vaddr: u64) -> Option<ThunkFn> {
-        self.address_thunks.get(&vaddr).copied()
+        if let Some(handler) = self.address_thunks.get(&vaddr).copied() {
+            tracing::debug!("[Thunk Exec] vaddr={:#x}", vaddr);
+            Some(handler)
+        } else {
+            None
+        }
     }
 
     pub fn register_symbol(&mut self, name: &str, handler: ThunkFn) {
@@ -648,12 +654,19 @@ pub fn thunk_getegid(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(
 
 pub fn thunk_fopen(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
     let path_ptr = ctx.get_x(0);
+    let mode_ptr = ctx.get_x(1);
     let path_bytes = mem.read_string(path_ptr).unwrap_or_default();
+    let mode_bytes = if mode_ptr != 0 { mem.read_string(mode_ptr).unwrap_or_default() } else { Vec::new() };
     let path = String::from_utf8_lossy(&path_bytes);
-    tracing::info!("[Thunk: fopen] path = {:?}", path);
+    let mode = String::from_utf8_lossy(&mode_bytes);
+    tracing::info!("[Thunk: fopen] path = {:?}, mode = {:?}", path, mode);
+
+    let is_write = mode.contains('w') || mode.contains('a') || mode.contains('+');
 
     let content = if maarch64_core::vfs::Vfs::is_passwd_path(&path) {
         maarch64_core::vfs::Vfs::get_passwd_content()
+    } else if is_write {
+        Vec::new()
     } else if let Ok(mut file) = std::fs::File::open(&*path) {
         use std::io::Read;
         let mut buf = Vec::new();
@@ -664,11 +677,13 @@ pub fn thunk_fopen(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), 
         return Ok(());
     };
 
-    let handle = mem.map_anonymous(0, 4096).unwrap_or(0);
+    let handle = mem.map_anonymous(0, 65536).unwrap_or(0);
     if handle != 0 {
-        let buf_base = handle + 128;
+        let buf_base = handle + 256;
         let buf_end = buf_base + content.len() as u64;
-        let _ = mem.write(buf_base, &content);
+        if !content.is_empty() {
+            let _ = mem.write(buf_base, &content);
+        }
 
         let _ = mem.write(handle + 0, &0xfbad8000u32.to_le_bytes()); // _flags
         let _ = mem.write(handle + 8, &buf_base.to_le_bytes()); // _IO_read_ptr
