@@ -15,6 +15,7 @@ pub mod vlc;
 pub mod albert;
 pub mod darwin;
 pub mod metal;
+pub mod sdl;
 
 pub fn thunk_stub(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     println!("[Maarch64 Thunk Warning] Unhandled dynamic symbol stub called!");
@@ -122,6 +123,7 @@ impl ThunkManager {
         audio::register_audio_thunks(&mut self.wrapped_symbols);
         vlc::register_vlc_thunks(&mut self.wrapped_symbols);
         albert::register_albert_thunks(&mut self.wrapped_symbols);
+        sdl::register_sdl_thunks(&mut self.wrapped_symbols);
         darwin::register_darwin_thunks(self);
         metal::register_metal_thunks(self);
         self.register_thunk("dlsym", thunk_dlsym);
