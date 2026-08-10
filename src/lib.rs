@@ -18,6 +18,7 @@ pub mod metal;
 pub mod sdl;
 pub mod gtk;
 pub mod qt;
+pub mod curl;
 
 pub fn thunk_stub(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     println!("[Maarch64 Thunk Warning] Unhandled dynamic symbol stub called!");
@@ -128,6 +129,7 @@ impl ThunkManager {
         sdl::register_sdl_thunks(&mut self.wrapped_symbols);
         gtk::register_gtk_thunks(&mut self.wrapped_symbols);
         qt::register_qt_thunks(&mut self.wrapped_symbols);
+        curl::register_curl_thunks(&mut self.wrapped_symbols);
         darwin::register_darwin_thunks(self);
         metal::register_metal_thunks(self);
         self.register_thunk("dlsym", thunk_dlsym);
