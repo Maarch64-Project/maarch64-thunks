@@ -9,6 +9,11 @@ pub fn register_android_thunks(manager: &mut ThunkManager) {
     manager.register_thunk("__system_property_get", thunk_system_property_get);
     manager.register_thunk("AAssetManager_open", thunk_AAssetManager_open);
     manager.register_thunk("ANativeWindow_fromSurface", thunk_ANativeWindow_fromSurface);
+    manager.register_thunk("ANativeWindow_getWidth", thunk_ANativeWindow_getWidth);
+    manager.register_thunk("ANativeWindow_getHeight", thunk_ANativeWindow_getHeight);
+    manager.register_thunk("ANativeWindow_setBuffersGeometry", thunk_ANativeWindow_setBuffersGeometry);
+    manager.register_thunk("ANativeWindow_acquire", thunk_ANativeWindow_acquire);
+    manager.register_thunk("ANativeWindow_release", thunk_ANativeWindow_release);
 }
 
 /// Thunk handler for `__android_log_print(int prio, const char *tag, const char *fmt, ...)`
@@ -25,13 +30,61 @@ pub fn thunk_android_log_print(ctx: &mut CpuContext, mem: &mut MemoryManager) ->
         "AndroidApp".to_string()
     };
 
-    let msg = if fmt_ptr != 0 {
-        mem.read_string(fmt_ptr)
-            .map(|b| String::from_utf8_lossy(&b).to_string())
-            .unwrap_or_else(|_| "".to_string())
-    } else {
-        "".to_string()
-    };
+    let mut msg = String::new();
+    if fmt_ptr != 0 {
+        if let Ok(fmt_bytes) = mem.read_string(fmt_ptr) {
+            let fmt = String::from_utf8_lossy(&fmt_bytes);
+            let mut arg_idx = 3;
+            let mut chars = fmt.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '%' {
+                    if let Some(&next_c) = chars.peek() {
+                        match next_c {
+                            's' => {
+                                chars.next();
+                                let str_ptr = ctx.get_x(arg_idx);
+                                arg_idx += 1;
+                                if str_ptr != 0 {
+                                    if let Ok(s_bytes) = mem.read_string(str_ptr) {
+                                        msg.push_str(&String::from_utf8_lossy(&s_bytes));
+                                    }
+                                }
+                            }
+                            'd' | 'i' => {
+                                chars.next();
+                                let val = ctx.get_x(arg_idx) as i64 as i32;
+                                arg_idx += 1;
+                                msg.push_str(&val.to_string());
+                            }
+                            'u' => {
+                                chars.next();
+                                let val = ctx.get_x(arg_idx) as u32;
+                                arg_idx += 1;
+                                msg.push_str(&val.to_string());
+                            }
+                            'x' | 'p' => {
+                                chars.next();
+                                let val = ctx.get_x(arg_idx);
+                                arg_idx += 1;
+                                msg.push_str(&format!("{:#x}", val));
+                            }
+                            '%' => {
+                                chars.next();
+                                msg.push('%');
+                            }
+                            _ => {
+                                msg.push('%');
+                            }
+                        }
+                    } else {
+                        msg.push('%');
+                    }
+                } else {
+                    msg.push(c);
+                }
+            }
+        }
+    }
 
     let prio_str = match prio {
         2 => "VERBOSE",
@@ -93,9 +146,39 @@ pub fn thunk_AAssetManager_open(ctx: &mut CpuContext, _mem: &mut MemoryManager) 
     Ok(())
 }
 
-/// Thunk handler stub for `ANativeWindow_fromSurface`
-pub fn thunk_ANativeWindow_fromSurface(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
-    tracing::info!("[Android NDK] ANativeWindow_fromSurface stub called");
-    ctx.set_x(0, 0x2000); // Return dummy native window handle
+/// Thunk handler for `ANativeWindow_fromSurface`
+pub fn thunk_ANativeWindow_fromSurface(ctx: &mut CpuContext, mem: &mut MemoryManager) -> Result<(), String> {
+    tracing::info!("[Android NDK] ANativeWindow_fromSurface creating native X11 GUI window");
+    let _ = crate::gpu::thunk_XCreateWindow(ctx, mem);
+    let win = ctx.get_x(0);
+    ctx.set_x(0, win);
+    Ok(())
+}
+
+/// Thunk handler for `ANativeWindow_getWidth`
+pub fn thunk_ANativeWindow_getWidth(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    ctx.set_x(0, 800);
+    Ok(())
+}
+
+/// Thunk handler for `ANativeWindow_getHeight`
+pub fn thunk_ANativeWindow_getHeight(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    ctx.set_x(0, 600);
+    Ok(())
+}
+
+/// Thunk handler for `ANativeWindow_setBuffersGeometry`
+pub fn thunk_ANativeWindow_setBuffersGeometry(ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    ctx.set_x(0, 0); // 0 = SUCCESS
+    Ok(())
+}
+
+/// Thunk handler for `ANativeWindow_acquire`
+pub fn thunk_ANativeWindow_acquire(_ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
+    Ok(())
+}
+
+/// Thunk handler for `ANativeWindow_release`
+pub fn thunk_ANativeWindow_release(_ctx: &mut CpuContext, _mem: &mut MemoryManager) -> Result<(), String> {
     Ok(())
 }
